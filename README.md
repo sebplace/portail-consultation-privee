@@ -1,6 +1,6 @@
-# Portail de consultation — prototype
+# Portail de rendez-vous — Dr Mathieu Place (prototype)
 
-Prototype **de démonstration** d'un portail de prise de rendez-vous pour une consultation privée, avec des **règles de suivi déterministes propres à chaque patient**.
+Prototype **de démonstration** d'un portail de prise de rendez-vous pour la consultation privée du **Dr Mathieu Place, psychiatre**, avec des **règles de suivi déterministes propres à chaque patient**.
 
 > ⚠️ **Démonstration à données fictives.** Aucune donnée réelle, aucun patient réel, aucune donnée clinique. Tout se passe **dans le navigateur** (stockage local). Ce prototype sert uniquement à recueillir un avis sur l'ergonomie et la logique.
 

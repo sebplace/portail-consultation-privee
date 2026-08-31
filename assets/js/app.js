@@ -20,9 +20,9 @@ function render() {
   clear(app);
   const head = el('header', { class: 'topbar' },
     el('div', { class: 'brand' },
-      el('div', { class: 'logo' }, '⌁'),
-      el('div', {}, el('div', { class: 'brand-title' }, 'Portail de consultation'),
-        el('div', { class: 'brand-sub' }, 'Prototype — agenda privé')),
+      el('div', { class: 'logo' }, 'MP'),
+      el('div', {}, el('div', { class: 'brand-title' }, 'Dr Mathieu Place'),
+        el('div', { class: 'brand-sub' }, 'Psychiatre · consultation privée')),
     ),
     switcher(),
   );

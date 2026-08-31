@@ -33,7 +33,7 @@ p { margin: 4px 0; line-height: 1.5; }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo {
   width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
-  background: linear-gradient(135deg, #3a5bd9, #6f86ea); color: #fff; font-size: 1.3rem;
+  background: linear-gradient(135deg, #3a5bd9, #6f86ea); color: #fff; font-size: 1rem; font-weight: 800; letter-spacing: .5px;
 }
 .brand-title { font-weight: 700; }
 .brand-sub { font-size: .78rem; color: var(--muted); }

@@ -195,7 +195,7 @@ function emailsTab() {
 function render(mount) {
   clear(mount);
   mount.appendChild(el('div', { class: 'space-head' },
-    el('div', {}, el('h2', {}, 'Tableau de bord médecin'),
+    el('div', {}, el('h2', {}, 'Tableau de bord — Dr Mathieu Place'),
       el('p', { class: 'muted' }, 'Démonstration — données fictives locales')),
     el('button', { class: 'btn btn-ghost danger', onclick: () => {
       if (confirm('Réinitialiser toutes les données de démonstration ?')) { store.reset(); tab = 'agenda'; render(mount); toast('Données réinitialisées.'); }

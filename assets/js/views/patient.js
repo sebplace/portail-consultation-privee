@@ -30,6 +30,7 @@ function loginView(mount) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
   const card = el('div', { class: 'card narrow' },
     el('h2', {}, 'Espace patient'),
+    el('p', { class: 'muted' }, 'Cabinet du Dr Mathieu Place — psychiatre.'),
     el('p', { class: 'muted' }, "Connexion par code d'accès personnel (démonstration)."),
     input,
     el('button', { class: 'btn btn-primary', onclick: connect }, 'Se connecter'),
