@@ -1,0 +1,12 @@
+{
+  "name": "portail-consultation-privee",
+  "version": "0.1.0",
+  "description": "Prototype de portail de rendez-vous pour consultation privee (demonstration a donnees fictives).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node tests/rules.test.mjs",
+    "serve": "node tests/serve.mjs"
+  },
+  "license": "UNLICENSED"
+}
