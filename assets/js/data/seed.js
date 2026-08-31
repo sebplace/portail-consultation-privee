@@ -17,7 +17,7 @@ export function buildSeed(now = new Date()) {
     {
       id: 'p-anne',
       code: 'ANNE-2026',
-      displayName: 'Patient A. (demo)',
+      displayName: 'Patient A. (démo)',
       rule: {
         frequencyDays: 21, marginDays: 5,
         allowedWeekdays: [1, 2, 4], // lun, mar, jeu
@@ -28,7 +28,7 @@ export function buildSeed(now = new Date()) {
     {
       id: 'p-bruno',
       code: 'BRUNO-2026',
-      displayName: 'Patient B. (demo)',
+      displayName: 'Patient B. (démo)',
       rule: {
         frequencyDays: 14, marginDays: 3,
         allowedWeekdays: [3, 5], // mer, ven
@@ -39,7 +39,7 @@ export function buildSeed(now = new Date()) {
     {
       id: 'p-clara',
       code: 'CLARA-2026',
-      displayName: 'Patient C. (demo)',
+      displayName: 'Patient C. (démo)',
       rule: {
         frequencyDays: 42, marginDays: 7,
         allowedWeekdays: [2, 4], // mar, jeu

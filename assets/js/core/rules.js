@@ -162,6 +162,18 @@ export function validateMove({ rule, appointment, newDate, patientAppointments, 
   return { ok: true };
 }
 
+// Rendez-vous FUTURS deja reserves d'un patient (sert de plafond de programmation).
+export function futureBooked(appointments, patientId, now = new Date()) {
+  return appointments.filter((a) =>
+    a.patientId === patientId && a.status === 'booked' && new Date(a.datetime) > now);
+}
+
+// Le patient a-t-il atteint le plafond de rdv futurs simultanes (bookAhead) ?
+export function bookingCapReached(appointments, patient, now = new Date()) {
+  const cap = patient.rule.bookAhead || 1;
+  return futureBooked(appointments, patient.id, now).length >= cap;
+}
+
 // Propose une chaine de N rdv a l'avance (bookAhead) : chaque rdv sert de base au suivant.
 export function proposeChain({ rule, lastDate, allBooked, now, count }) {
   const proposals = [];

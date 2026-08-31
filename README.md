@@ -15,7 +15,7 @@ Deux espaces, via le sélecteur en haut :
 
 ## Ce que le prototype démontre
 
-- **Moteur de règles par patient** : fréquence, marge ± autour de la fréquence, jours/heures autorisés, durée, nombre de rendez-vous à l'avance.
+- **Moteur de règles par patient** : fréquence, marge ± autour de la fréquence, jours/heures autorisés, durée, et **plafond de rendez-vous à l'avance** (nombre maximum de rendez-vous futurs simultanés).
 - Le patient ne voit **que** les créneaux réellement compatibles avec son rythme de suivi.
 - Un déplacement n'est autorisé **que** dans une fourchette cohérente.
 - Les opérations ordinaires (prise / déplacement / annulation sans commentaire) **ne génèrent aucune alerte**.

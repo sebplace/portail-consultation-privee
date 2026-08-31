@@ -3,6 +3,7 @@
 import assert from 'node:assert';
 import {
   addDays, isoWeekday, coherentWindow, compatibleSlots, validateMove, proposeChain, atTime,
+  futureBooked, bookingCapReached,
 } from '../assets/js/core/rules.js';
 
 let passed = 0;
@@ -79,6 +80,35 @@ test('proposeChain: enchaine N rdv espaces d\'environ la frequence', () => {
     assert.ok(gap >= rule.frequencyDays - rule.marginDays - 1 && gap <= rule.frequencyDays + rule.marginDays + 1,
       `ecart ${gap}j dans la fourchette`);
   }
+});
+
+test('futureBooked: ne compte que les rdv futurs reserves du patient', () => {
+  const now = new Date(2026, 0, 10, 12, 0);
+  const appts = [
+    { id: 'x1', patientId: 'p', status: 'booked', datetime: new Date(2026, 0, 20).toISOString(), durationMin: 45 },
+    { id: 'x2', patientId: 'p', status: 'booked', datetime: new Date(2026, 0, 5).toISOString(), durationMin: 45 }, // passe
+    { id: 'x3', patientId: 'p', status: 'cancelled', datetime: new Date(2026, 0, 25).toISOString(), durationMin: 45 }, // annule
+    { id: 'x4', patientId: 'autre', status: 'booked', datetime: new Date(2026, 0, 22).toISOString(), durationMin: 45 }, // autre patient
+  ];
+  assert.equal(futureBooked(appts, 'p', now).length, 1);
+});
+
+test('bookingCapReached: plafond bookAhead=1 atteint des 1 rdv futur', () => {
+  const now = new Date(2026, 0, 10, 12, 0);
+  const patient = { id: 'p', rule: { ...rule, bookAhead: 1 } };
+  const none = [];
+  assert.equal(bookingCapReached(none, patient, now), false);
+  const one = [{ id: 'y1', patientId: 'p', status: 'booked', datetime: new Date(2026, 0, 20).toISOString(), durationMin: 45 }];
+  assert.equal(bookingCapReached(one, patient, now), true, 'un rdv futur suffit a atteindre le plafond de 1');
+});
+
+test('bookingCapReached: plafond bookAhead=2 laisse un 2e rdv possible', () => {
+  const now = new Date(2026, 0, 10, 12, 0);
+  const patient = { id: 'p', rule: { ...rule, bookAhead: 2 } };
+  const one = [{ id: 'z1', patientId: 'p', status: 'booked', datetime: new Date(2026, 0, 20).toISOString(), durationMin: 45 }];
+  assert.equal(bookingCapReached(one, patient, now), false);
+  const two = [...one, { id: 'z2', patientId: 'p', status: 'booked', datetime: new Date(2026, 1, 3).toISOString(), durationMin: 45 }];
+  assert.equal(bookingCapReached(two, patient, now), true);
 });
 
 console.log(`\n${passed} test(s) reussi(s).`);

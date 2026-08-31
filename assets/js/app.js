@@ -12,7 +12,7 @@ let space = 'patient';
 function switcher() {
   return el('div', { class: 'switcher' },
     el('button', { class: 'seg' + (space === 'patient' ? ' active' : ''), onclick: () => { space = 'patient'; render(); } }, 'Espace patient'),
-    el('button', { class: 'seg' + (space === 'medecin' ? ' active' : ''), onclick: () => { space = 'medecin'; render(); } }, 'Espace medecin'),
+    el('button', { class: 'seg' + (space === 'medecin' ? ' active' : ''), onclick: () => { space = 'medecin'; render(); } }, 'Espace médecin'),
   );
 }
 
@@ -22,7 +22,7 @@ function render() {
     el('div', { class: 'brand' },
       el('div', { class: 'logo' }, '⌁'),
       el('div', {}, el('div', { class: 'brand-title' }, 'Portail de consultation'),
-        el('div', { class: 'brand-sub' }, 'Prototype — agenda prive')),
+        el('div', { class: 'brand-sub' }, 'Prototype — agenda privé')),
     ),
     switcher(),
   );
@@ -33,7 +33,7 @@ function render() {
   else mountDoctor(main);
 
   app.appendChild(el('footer', { class: 'foot' },
-    'Prototype de demonstration · donnees fictives · aucune donnee reelle · stockage local du navigateur.'));
+    'Prototype de démonstration · données fictives · aucune donnée réelle · stockage local du navigateur.'));
 }
 
 render();

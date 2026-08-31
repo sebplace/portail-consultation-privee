@@ -1,6 +1,7 @@
 // Persistance locale (localStorage) + journal + notifications neutres.
 // Aucune donnee ne quitte le navigateur : prototype pour avis uniquement.
 import { buildSeed } from '../data/seed.js';
+import { bookingCapReached } from './rules.js';
 
 const KEY = 'pcp.state.v1';
 
@@ -43,6 +44,10 @@ export function appointments() { return get().appointments; }
 export function appointmentsOf(patientId) {
   return get().appointments.filter((a) => a.patientId === patientId);
 }
+export function futureAppointmentsOf(patientId, now = new Date()) {
+  return get().appointments.filter((a) =>
+    a.patientId === patientId && a.status === 'booked' && new Date(a.datetime) > now);
+}
 export function bookedAppointments() {
   return get().appointments.filter((a) => a.status === 'booked');
 }
@@ -60,6 +65,21 @@ export function logOp(actor, action, detail) {
 function uid(prefix) { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`; }
 
 export function bookAppointment(patientId, datetimeISO, durationMin) {
+  const patient = patientById(patientId);
+  // Plafond de programmation : nombre max de rdv futurs simultanes.
+  if (patient && bookingCapReached(get().appointments, patient, new Date())) {
+    return { error: 'cap', message: `Plafond atteint : ${patient.rule.bookAhead} rendez-vous a venir maximum.` };
+  }
+  // Protection anti double-reservation : le creneau ne doit pas chevaucher un rdv existant.
+  const start = new Date(datetimeISO);
+  const end = new Date(start.getTime() + durationMin * 60000);
+  const clash = get().appointments.some((a) => {
+    if (a.status !== 'booked') return false;
+    const s = new Date(a.datetime);
+    const e = new Date(s.getTime() + a.durationMin * 60000);
+    return start < e && s < end;
+  });
+  if (clash) return { error: 'clash', message: 'Ce creneau vient d\'etre pris. Choisissez-en un autre.' };
   const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin, status: 'booked' };
   get().appointments.push(a);
   logOp('patient', 'prise', `${patientId} @ ${datetimeISO}`);
@@ -154,7 +174,7 @@ export function pushNeutralEmail() {
   neutralInbox.push({
     ts: new Date().toISOString(),
     subject: 'Nouvelle demande disponible',
-    body: "Bonjour,\n\nUne nouvelle demande est disponible dans votre espace professionnel securise.\nAucun detail n'est transmis par e-mail.\n\nLien : [espace pro securise]\n\nCe canal ne remplace pas les dispositifs d'urgence.",
+    body: "Bonjour,\n\nUne nouvelle demande est disponible dans votre espace professionnel sécurisé.\nAucun détail n'est transmis par e-mail.\n\nLien : [espace pro sécurisé]\n\nCe canal ne remplace pas les dispositifs d'urgence.",
   });
 }
 export function neutralEmails() { return [...neutralInbox].reverse(); }

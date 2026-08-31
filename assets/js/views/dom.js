@@ -28,7 +28,7 @@ export function fmtDateTime(d) {
   const month = String(dt.getMonth() + 1).padStart(2, '0');
   const hh = String(dt.getHours()).padStart(2, '0');
   const mm = String(dt.getMinutes()).padStart(2, '0');
-  return `${wd} ${day}/${month}/${dt.getFullYear()} a ${hh}h${mm}`;
+  return `${wd} ${day}/${month}/${dt.getFullYear()} à ${hh}h${mm}`;
 }
 
 export function fmtDate(d) {

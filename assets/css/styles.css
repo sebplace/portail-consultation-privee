@@ -86,6 +86,11 @@ textarea.field { resize: vertical; }
 
 /* Notice */
 .notice { background: #fff8e6; border: 1px solid #f0e0b0; color: #6b5a1e; border-radius: 11px; padding: 12px 14px; font-size: .88rem; }
+.notice.info { background: var(--primary-soft); border-color: #cdd8f7; color: #2b3f8f; }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn[disabled]:hover { filter: none; background: var(--primary); }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.day-toggle.on::before { content: '✓ '; }
 .note-box { background: var(--bg); border-radius: 9px; padding: 10px 12px; margin-top: 6px; font-size: .92rem; white-space: pre-wrap; }
 
 /* Tabs */
