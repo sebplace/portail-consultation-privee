@@ -3,7 +3,7 @@
 // clinique. Les données de démonstration vivent dans localStorage (jamais dans ce cache),
 // et aucune requête réseau applicative n'est interceptée ni stockée : seules les
 // ressources statiques listées ci-dessous (HTML/CSS/JS/icône/manifest) sont servies.
-const CACHE = 'pcp-shell-v7';
+const CACHE = 'pcp-shell-v8';
 const SHELL = [
   './',
   './index.html',

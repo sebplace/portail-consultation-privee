@@ -26,6 +26,27 @@ export function ymd(date) {
   return `${y}-${m}-${d}`;
 }
 
+// --- Validation d'identité (formulaire de nouvelle demande) ---
+// Validateur d'e-mail volontairement simple et strict : une partie locale, un @,
+// un domaine avec au moins un point et aucune espace. Rejette « x », « a@b », etc.
+export function isValidEmail(email) {
+  if (typeof email !== 'string') return false;
+  const v = email.trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+// Retourne la liste ordonnée des problèmes { field, message } pour l'identité
+// obligatoire (nom, prénom, e-mail). Le premier élément sert au focus.
+export function validateDemandIdentity({ nom, prenom, email } = {}) {
+  const problems = [];
+  if (!nom || !String(nom).trim()) problems.push({ field: 'nom', message: 'Le nom est obligatoire.' });
+  if (!prenom || !String(prenom).trim()) problems.push({ field: 'prenom', message: 'Le prénom est obligatoire.' });
+  const e = email ? String(email).trim() : '';
+  if (!e) problems.push({ field: 'email', message: "L'e-mail est obligatoire." });
+  else if (!isValidEmail(e)) problems.push({ field: 'email', message: "Format d'e-mail invalide (exemple : prenom.nom@exemple.be)." });
+  return problems;
+}
+
 // 1=lundi .. 7=dimanche
 export function isoWeekday(date) {
   const g = date.getDay();

@@ -271,10 +271,13 @@ function newDemandView(mount) {
         el('div', { class: 'notice' }, "Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai, ni suivi régulier. Ce dispositif ne remplace pas les services d'urgence (112)."));
       card.append(navRow(null, () => { state.circuitId = sel.value; state.step = 1; draw(); }));
     } else if (state.step === 1) {
-      const nom = el('input', { class: 'field', autocomplete: 'family-name', value: state.nom });
-      const prenom = el('input', { class: 'field', autocomplete: 'given-name', value: state.prenom });
+      const errNom = el('div', { id: 'err-nom', class: 'field-err', role: 'alert', hidden: '' });
+      const errPrenom = el('div', { id: 'err-prenom', class: 'field-err', role: 'alert', hidden: '' });
+      const errEmail = el('div', { id: 'err-email', class: 'field-err', role: 'alert', hidden: '' });
+      const nom = el('input', { class: 'field', autocomplete: 'family-name', 'aria-describedby': 'err-nom', value: state.nom });
+      const prenom = el('input', { class: 'field', autocomplete: 'given-name', 'aria-describedby': 'err-prenom', value: state.prenom });
       const naissance = el('input', { class: 'field', type: 'date', autocomplete: 'bday', value: state.naissance });
-      const email = el('input', { class: 'field', type: 'email', autocomplete: 'email', placeholder: 'prenom.nom@exemple.be', value: state.email });
+      const email = el('input', { class: 'field', type: 'email', autocomplete: 'email', 'aria-describedby': 'err-email', placeholder: 'prenom.nom@exemple.be', value: state.email });
       const tel = el('input', { class: 'field', type: 'tel', autocomplete: 'tel', placeholder: 'Téléphone de secours', value: state.tel });
       const origine = el('select', { class: 'field' }, el('option', { value: 'personnelle', selected: state.origine === 'personnelle' ? '' : null }, 'Démarche personnelle'), el('option', { value: 'adresse', selected: state.origine === 'adresse' ? '' : null }, 'Adressé(e) par un professionnel'));
       // Objectif principal en CHOIX FERMÉS (propre au circuit).
@@ -283,10 +286,28 @@ function newDemandView(mount) {
       const relais = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom), le cas échéant', value: state.relais });
       const relaisCoord = el('input', { class: 'field', placeholder: 'Coordonnées du relais (e-mail/téléphone)', value: state.relaisCoord });
       const save = () => { state.nom = nom.value.trim(); state.prenom = prenom.value.trim(); state.naissance = naissance.value; state.email = email.value.trim(); state.tel = tel.value.trim(); state.origine = origine.value; state.objectif = objSel.value; state.adressePar = adressePar.value; state.relais = relais.value; state.relaisCoord = relaisCoord.value; };
+      const inputs = { nom, prenom, email };
+      const errNodes = { nom: errNom, prenom: errPrenom, email: errEmail };
+      const clearErrors = () => { for (const k of Object.keys(inputs)) { errNodes[k].hidden = true; errNodes[k].textContent = ''; inputs[k].removeAttribute('aria-invalid'); inputs[k].classList.remove('is-invalid'); } };
+      // Effacement au fil de la saisie pour ne pas laisser une erreur obsolète.
+      for (const k of Object.keys(inputs)) inputs[k].addEventListener('input', () => { errNodes[k].hidden = true; errNodes[k].textContent = ''; inputs[k].removeAttribute('aria-invalid'); inputs[k].classList.remove('is-invalid'); });
+      const validate = () => {
+        save();
+        clearErrors();
+        const problems = rules.validateDemandIdentity({ nom: state.nom, prenom: state.prenom, email: state.email });
+        if (!problems.length) return true;
+        for (const p of problems) { errNodes[p.field].textContent = p.message; errNodes[p.field].hidden = false; inputs[p.field].setAttribute('aria-invalid', 'true'); inputs[p.field].classList.add('is-invalid'); }
+        toast(problems.length > 1 ? 'Merci de compléter ou corriger les champs signalés.' : problems[0].message, 'err');
+        inputs[problems[0].field].focus();
+        return false;
+      };
       card.append(el('h3', {}, 'Vos coordonnées'),
-        el('p', { class: 'muted small' }, 'Nécessaires pour vous adresser une invitation sécurisée ou vous joindre en secours. Champs à titre de démonstration (données fictives).'),
-        ...field('Nom', nom), ...field('Prénom', prenom), ...field('Date de naissance', naissance),
-        ...field('E-mail', email), ...field('Téléphone de secours', tel),
+        el('p', { class: 'muted small' }, 'Nom, prénom et e-mail sont obligatoires (indiqués par *). Ils permettent de vous adresser une invitation sécurisée ou de vous joindre en secours. Champs à titre de démonstration (données fictives).'),
+        ...field('Nom', nom, { required: true }), errNom,
+        ...field('Prénom', prenom, { required: true }), errPrenom,
+        ...field('Date de naissance', naissance),
+        ...field('E-mail', email, { required: true }), errEmail,
+        ...field('Téléphone de secours', tel),
         el('h3', {}, 'Contexte'),
         ...field('Origine de la démarche', origine),
         ...field('Objectif principal', objSel),
@@ -294,8 +315,7 @@ function newDemandView(mount) {
         ...field('Relais prescripteur éventuel', relais),
         ...field('Coordonnées du relais', relaisCoord));
       card.append(navRow(() => { save(); state.step = 0; draw(); }, () => {
-        save();
-        if (!state.nom || !state.prenom || !state.email) { toast('Nom, prénom et e-mail sont nécessaires pour vous recontacter.', 'err'); return; }
+        if (!validate()) return;
         state.step = 2; draw();
       }));
     } else if (state.step === 2) {

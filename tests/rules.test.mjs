@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {
   addDays, atTime, isoWeekday, resolveAnchor, cadenceWindow, compatibleSlots,
   futurePlanned, bookingCapReached, validateMove, proposeSeries, canJoinWaitlist, canAdaptMedication,
+  isValidEmail, validateDemandIdentity,
 } from '../assets/js/core/rules.js';
 import { generateOpenSlots, isClosed, appointmentsInClosure } from '../assets/js/core/availability.js';
 import { buildSeed } from '../assets/js/data/seed.js';
@@ -238,6 +239,38 @@ test('proposeSeries sur créneaux d\'avis : espacement 14j (défaut), 3 créneau
     const gap = (serie[i] - serie[i - 1]) / (24 * 3600 * 1000);
     assert.ok(gap >= 14 - 3 - 1 && gap <= 14 + 3 + 1, `espacement ${gap}j proche de 14`);
   }
+});
+
+test('isValidEmail: rejette les formats invalides, accepte un e-mail plausible', () => {
+  for (const bad of ['x', '', 'a@b', 'a@b.', '@exemple.be', 'nom exemple@x.be', 'a@@b.be', 'a@b .be']) {
+    assert.equal(isValidEmail(bad), false, `refus: ${JSON.stringify(bad)}`);
+  }
+  for (const ok of ['prenom.nom@exemple.be', 'a@b.co', 'jean-luc@sous.domaine.fr']) {
+    assert.equal(isValidEmail(ok), true, `accepté: ${ok}`);
+  }
+});
+
+test('validateDemandIdentity: signale les champs manquants dans l\'ordre nom, prénom, e-mail', () => {
+  const all = validateDemandIdentity({ nom: '', prenom: '', email: '' });
+  assert.deepEqual(all.map((p) => p.field), ['nom', 'prenom', 'email'], 'ordre des problèmes');
+  assert.ok(all.every((p) => typeof p.message === 'string' && p.message.length > 0), 'chaque problème a un message');
+});
+
+test('validateDemandIdentity: e-mail « x » rejeté même si nom et prénom fournis', () => {
+  const probs = validateDemandIdentity({ nom: 'Test', prenom: 'Fictif', email: 'x' });
+  assert.equal(probs.length, 1, 'un seul problème');
+  assert.equal(probs[0].field, 'email');
+  assert.match(probs[0].message, /invalide/i);
+});
+
+test('validateDemandIdentity: identité complète et e-mail valide => aucun problème', () => {
+  const probs = validateDemandIdentity({ nom: 'Test', prenom: 'Fictif', email: 'fictif.test@exemple.be' });
+  assert.equal(probs.length, 0);
+});
+
+test('validateDemandIdentity: espaces seuls comptent comme manquants', () => {
+  const probs = validateDemandIdentity({ nom: '   ', prenom: 'Fictif', email: 'fictif.test@exemple.be' });
+  assert.deepEqual(probs.map((p) => p.field), ['nom']);
 });
 
 console.log(`\n${passed} test(s) réussi(s).`);

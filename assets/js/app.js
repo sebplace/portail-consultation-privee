@@ -7,7 +7,7 @@ import { mountDoctor } from './views/doctor.js';
 import { el, clear, toast } from './views/dom.js';
 
 // Numéro de version affiché et utilisé pour repérer les mises à jour du cache.
-export const APP_VERSION = 'v7';
+export const APP_VERSION = 'v8';
 
 store.load();
 

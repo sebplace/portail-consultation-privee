@@ -18,10 +18,19 @@ export function clear(node) { while (node.firstChild) node.removeChild(node.firs
 
 // Accessibilité : associe un libellé à un champ via for/id (id auto si absent).
 // Retourne [label, input] afin de rester des frères directs (compatible grilles CSS).
+// opts.required : ajoute un astérisque visuel et required/aria-required sur le champ.
 let _autoId = 0;
-export function field(labelText, input, labelClass = 'lbl') {
+export function field(labelText, input, opts = {}) {
+  if (typeof opts === 'string') opts = { labelClass: opts };
+  const labelClass = opts.labelClass || 'lbl';
   if (!input.id) input.id = 'f-' + (++_autoId);
-  return [el('label', { class: labelClass, for: input.id }, labelText), input];
+  const children = [labelText];
+  if (opts.required) {
+    input.setAttribute('required', '');
+    input.setAttribute('aria-required', 'true');
+    children.push(el('span', { class: 'req', 'aria-hidden': 'true', title: 'Champ obligatoire' }, ' *'));
+  }
+  return [el('label', { class: labelClass, for: input.id }, ...children), input];
 }
 
 const WD = ['', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
