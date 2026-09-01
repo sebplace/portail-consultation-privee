@@ -52,7 +52,7 @@ function isBusy(slotStart, durationMin, appointments) {
 // - includeEmergency=false : les créneaux d'urgence sont exclus (invisibles au public).
 // - retourne [{ start:Date, iso, day, time, emergency:boolean }]
 export function generateOpenSlots({
-  doctor, appointments = [], from, to, now = new Date(), includeEmergency = false, includeProtected = false,
+  doctor, appointments = [], from, to, now = new Date(), includeEmergency = false, includeProtected = false, includeAvis = false,
 }) {
   const dur = doctor.slotDurationMin;
   const out = [];
@@ -61,19 +61,52 @@ export function generateOpenSlots({
   const end = new Date(to.getTime());
   end.setHours(23, 59, 59, 999);
   const protectedTpl = doctor.protectedTemplate || {};
+  const avisTpl = doctor.avisTemplate || {};
+  const converted = new Set((doctor.convertedAvisSlots || []));
+  const isConverted = (start) => converted.has(start.toISOString());
   while (cursor <= end) {
     const wd = isoWeekday(cursor);
-    const publicTimes = (doctor.weeklyTemplate[wd] || []).map((t) => ({ t, emergency: false, protected: false }));
-    const emgTimes = includeEmergency ? (doctor.emergencyTemplate[wd] || []).map((t) => ({ t, emergency: true, protected: false })) : [];
-    const protTimes = includeProtected ? (protectedTpl[wd] || []).map((t) => ({ t, emergency: false, protected: true })) : [];
-    for (const { t, emergency, protected: prot } of [...publicTimes, ...emgTimes, ...protTimes]) {
-      // Un créneau protégé n'est jamais public.
-      if (!includeProtected && (protectedTpl[wd] || []).includes(t)) continue;
+    const publicTimes = (doctor.weeklyTemplate[wd] || []).map((t) => ({ t, kind: 'public' }));
+    const emgTimes = includeEmergency ? (doctor.emergencyTemplate[wd] || []).map((t) => ({ t, kind: 'emergency' })) : [];
+    const protTimes = includeProtected ? (protectedTpl[wd] || []).map((t) => ({ t, kind: 'protected' })) : [];
+    const avisTimes = (avisTpl[wd] || []).map((t) => ({ t, kind: 'avis' }));
+    for (const { t, kind } of [...publicTimes, ...emgTimes, ...protTimes, ...avisTimes]) {
       const start = atTime(cursor, t);
+      // Un créneau protégé n'est jamais public.
+      if (kind === 'public' && (protectedTpl[wd] || []).includes(t)) continue;
+      // Un créneau d'avis : exclu de l'ordinaire, SAUF s'il a été converti manuellement en ordinaire.
+      if (kind === 'avis') {
+        if (isConverted(start)) continue;         // devenu ordinaire -> déjà listé comme public si présent
+        if (!includeAvis) continue;               // non demandé : invisible côté ordinaire
+      }
+      // Un créneau d'avis converti en ordinaire doit apparaître côté public.
+      if (kind === 'public' && (avisTpl[wd] || []).includes(t) && !isConverted(start)) continue;
       if (start <= now) continue;
       if (isClosed(start, doctor.closures)) continue;
       if (isBusy(start, dur, appointments)) continue;
-      out.push({ start, iso: start.toISOString(), day: ymd(start), time: t, emergency, protected: prot });
+      out.push({ start, iso: start.toISOString(), day: ymd(start), time: t, emergency: kind === 'emergency', protected: kind === 'protected', avis: kind === 'avis' });
+    }
+    // Créneaux d'avis ponctuels (extraAvisSlots) pour cette date, si includeAvis.
+    if (includeAvis) {
+      for (const isoDt of (doctor.extraAvisSlots || [])) {
+        const start = new Date(isoDt);
+        if (ymd(start) !== ymd(cursor)) continue;
+        if (start <= now) continue;
+        if (isClosed(start, doctor.closures)) continue;
+        if (isBusy(start, dur, appointments)) continue;
+        out.push({ start, iso: start.toISOString(), day: ymd(start), time: `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`, emergency: false, protected: false, avis: true, extra: true });
+      }
+    }
+    // Créneaux d'avis convertis en ordinaire (côté public) pour cette date.
+    if (!includeAvis) {
+      for (const isoDt of (doctor.convertedAvisSlots || [])) {
+        const start = new Date(isoDt);
+        if (ymd(start) !== ymd(cursor)) continue;
+        if (start <= now) continue;
+        if (isClosed(start, doctor.closures)) continue;
+        if (isBusy(start, dur, appointments)) continue;
+        out.push({ start, iso: start.toISOString(), day: ymd(start), time: `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`, emergency: false, protected: false, avis: false, converted: true });
+      }
     }
     cursor = addDays(cursor, 1);
   }

@@ -2,9 +2,10 @@
 import assert from 'node:assert';
 import {
   addDays, atTime, isoWeekday, resolveAnchor, cadenceWindow, compatibleSlots,
-  futurePlanned, bookingCapReached, validateMove, proposeSeries,
+  futurePlanned, bookingCapReached, validateMove, proposeSeries, canJoinWaitlist, canAdaptMedication,
 } from '../assets/js/core/rules.js';
 import { generateOpenSlots, isClosed, appointmentsInClosure } from '../assets/js/core/availability.js';
+import { buildSeed } from '../assets/js/data/seed.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -183,6 +184,60 @@ test('isClosed: fermeture demi-journée (ISO) ne bloque que la plage horaire', (
   const closures = [{ from: '2026-01-08T08:00:00', to: '2026-01-08T12:00:00', label: 'matinée' }];
   assert.equal(isClosed(atTime(new Date(2026, 0, 8), '09:15'), closures), true, 'matin fermé');
   assert.equal(isClosed(atTime(new Date(2026, 0, 8), '14:30'), closures), false, 'après-midi ouvert');
+});
+
+// --- v5 : créneaux d'avis dédiés, désistement, circuits, relais ---
+const seed = buildSeed(new Date(2026, 0, 5, 7, 0, 0, 0));
+
+test('seed: créneaux d\'avis = mardi 16:00 et jeudi 11:30, retirés de l\'ordinaire', () => {
+  const d = seed.doctor;
+  assert.deepEqual(d.avisTemplate[2], ['16:00']);
+  assert.deepEqual(d.avisTemplate[4], ['11:30']);
+  assert.ok(!d.weeklyTemplate[2].includes('16:00'), 'mardi 16:00 hors ordinaire');
+  assert.ok(!d.weeklyTemplate[4].includes('11:30'), 'jeudi 11:30 hors ordinaire');
+  assert.ok(d.weeklyTemplate[4].includes('17:30'), 'jeudi 17:30 reste ordinaire');
+});
+
+test('generateOpenSlots: avis exclus de l\'ordinaire, présents seulement en mode avis', () => {
+  const d = seed.doctor; const now = new Date(2026, 0, 5, 7, 0);
+  const to = addDays(now, 14);
+  const ord = generateOpenSlots({ doctor: d, appointments: [], from: now, to, now });
+  assert.ok(!ord.some((s) => isoWeekday(s.start) === 2 && s.time === '16:00'), 'mardi 16:00 absent de l\'ordinaire');
+  assert.ok(!ord.some((s) => isoWeekday(s.start) === 4 && s.time === '11:30'), 'jeudi 11:30 absent de l\'ordinaire');
+  const av = generateOpenSlots({ doctor: d, appointments: [], from: now, to, now, includeAvis: true }).filter((s) => s.avis);
+  assert.ok(av.some((s) => isoWeekday(s.start) === 2 && s.time === '16:00'), 'mardi 16:00 présent en avis');
+  assert.ok(av.some((s) => isoWeekday(s.start) === 4 && s.time === '11:30'), 'jeudi 11:30 présent en avis');
+});
+
+test('canJoinWaitlist: refuse sans rdv futur, accepte avec rdv futur planifié', () => {
+  const now = new Date(2026, 0, 5, 7, 0);
+  const none = [{ patientId: 'p', status: 'effectue', datetime: new Date(2025, 11, 20).toISOString() }];
+  assert.equal(canJoinWaitlist(none, 'p', now), false, 'aucun rdv futur -> refus');
+  const withFuture = [...none, { patientId: 'p', status: 'planifie', datetime: addDays(now, 10).toISOString() }];
+  assert.equal(canJoinWaitlist(withFuture, 'p', now), true, 'un rdv futur -> accès');
+});
+
+test('seed TDAH: 3 initiales, phase thérapeutique 3 sur décision distincte', () => {
+  const tdah = seed.circuits.find((c) => c.id === 'tdah');
+  assert.equal(tdah.initialSessions, 3);
+  assert.equal(tdah.phases.therapeutique, 3);
+  assert.equal(tdah.therapeuticNeedsDecision, true);
+});
+
+test('canAdaptMedication: bloqué sans relais, autorisé avec relais', () => {
+  assert.equal(canAdaptMedication({ relais: '' }), false);
+  assert.equal(canAdaptMedication({ relais: 'Dr X' }), true);
+});
+
+test('proposeSeries sur créneaux d\'avis : espacement 14j (défaut), 3 créneaux', () => {
+  const d = seed.doctor; const now = new Date(2026, 0, 5, 7, 0);
+  const av = generateOpenSlots({ doctor: d, appointments: [], from: now, to: addDays(now, 84), now, includeAvis: true }).filter((s) => s.avis);
+  const serie = proposeSeries({ openSlots: av, count: 3, spacingDays: 14, marginDays: 3, now });
+  assert.ok(Array.isArray(serie) && serie.length === 3, 'trois créneaux d\'avis');
+  for (let i = 1; i < serie.length; i++) {
+    const gap = (serie[i] - serie[i - 1]) / (24 * 3600 * 1000);
+    assert.ok(gap >= 14 - 3 - 1 && gap <= 14 + 3 + 1, `espacement ${gap}j proche de 14`);
+  }
 });
 
 console.log(`\n${passed} test(s) réussi(s).`);

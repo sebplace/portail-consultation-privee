@@ -174,7 +174,8 @@ function waitlistPrefsView(mount, patient) {
   clear(mount); header(mount, patient);
   const existing = store.waitlist().find((w) => w.patientId === patient.id);
   const p = (existing && existing.prefs) || { weekdays: null, timeFrom: null, timeTo: null, minDelayHours: 24 };
-  const dayBtns = [1, 2, 3, 4, 5, 6, 7].map((d) => {
+  const consultDays = store.consultationWeekdays(); // uniquement les vrais jours de consultation
+  const dayBtns = consultDays.map((d) => {
     const on = !p.weekdays || p.weekdays.includes(d);
     return el('button', { class: 'day-toggle' + (on ? ' on' : ''), 'data-day': String(d), 'aria-pressed': on ? 'true' : 'false',
       onclick: (e) => { const b = e.currentTarget; const now = b.classList.toggle('on'); b.setAttribute('aria-pressed', now ? 'true' : 'false'); } }, weekdayShort(d));
@@ -184,7 +185,7 @@ function waitlistPrefsView(mount, patient) {
   const delay = el('input', { class: 'field mini', type: 'number', min: '0', value: String(p.minDelayHours ?? 24) });
   mount.appendChild(el('div', { class: 'card' },
     el('h3', {}, 'Liste de désistement — mes préférences'),
-    el('p', { class: 'muted small' }, 'Vous serez prévenu(e) uniquement pour une place plus tôt correspondant à ces préférences.'),
+    el('p', { class: 'muted small' }, 'Vous serez prévenu(e) uniquement pour une place plus tôt correspondant à ces préférences. Seuls les jours de consultation sont proposés.'),
     el('label', { class: 'lbl' }, 'Jours acceptés'),
     el('div', { class: 'day-row', role: 'group', 'aria-label': 'Jours acceptés' }, dayBtns),
     el('div', { class: 'rule-grid' },
@@ -196,9 +197,11 @@ function waitlistPrefsView(mount, patient) {
       el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
       el('button', { class: 'btn btn-primary', onclick: (e) => {
         const days = [...e.target.closest('.card').querySelectorAll('.day-toggle.on')].map((b) => Number(b.dataset.day));
-        const prefs = { weekdays: days.length === 7 ? null : days, timeFrom: from.value || null, timeTo: to.value || null, minDelayHours: Number(delay.value) || 0 };
-        if (!store.waitlist().some((w) => w.patientId === patient.id)) store.joinWaitlist(patient.id, { actor: 'patient', prefs });
-        else store.updateWaitlistPrefs(patient.id, prefs);
+        const prefs = { weekdays: days.length === consultDays.length ? null : days, timeFrom: from.value || null, timeTo: to.value || null, minDelayHours: Number(delay.value) || 0 };
+        if (!store.waitlist().some((w) => w.patientId === patient.id)) {
+          const r = store.joinWaitlist(patient.id, { actor: 'patient', prefs });
+          if (r && r.error) { toast(r.message, 'err'); return; }
+        } else store.updateWaitlistPrefs(patient.id, prefs);
         toast('Préférences enregistrées. Vous êtes sur la liste de désistement.'); render(mount);
       } }, 'Enregistrer et m\'inscrire'),
     ),
@@ -227,7 +230,7 @@ function appointmentRow(mount, a, patient) {
 // --- Nouvelle demande : formulaire en étapes (stepper) ---
 function newDemandView(mount) {
   clear(mount);
-  const state = { step: 0, circuitId: store.circuits()[0].id, origine: 'personnelle', objectif: '', adressePar: '', relais: '', dispos: '', note: '', ack: false };
+  const state = { step: 0, circuitId: store.circuits()[0].id, origine: 'personnelle', objectif: '', adressePar: '', relais: '', relaisCoord: '', dispos: '', note: '', ack: false };
   const steps = ['Circuit', 'Contexte', 'Disponibilités', 'Validation'];
   function head() {
     return el('div', { class: 'space-head' },
@@ -238,32 +241,43 @@ function newDemandView(mount) {
   function draw() {
     clear(mount); mount.appendChild(head()); mount.appendChild(stepper());
     const card = el('div', { class: 'card' });
+    const circuit = store.circuitById(state.circuitId);
     if (state.step === 0) {
       const sel = el('select', { class: 'field' }, store.circuits().map((c) => el('option', { value: c.id, selected: c.id === state.circuitId ? '' : null }, c.label)));
-      card.append(el('h3', {}, 'Quel type de demande ?'), el('div', { class: 'notice' }, "Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai, ni suivi régulier. Ce dispositif ne remplace pas les services d'urgence (112)."), sel);
+      const explain = el('div', { class: 'notice info' }, circuit.description || '');
+      sel.addEventListener('change', () => { state.circuitId = sel.value; explain.textContent = store.circuitById(sel.value).description || ''; });
+      card.append(el('h3', {}, 'Quel type de demande ?'), el('label', { class: 'lbl' }, 'Circuit demandé'), sel, explain,
+        el('div', { class: 'notice' }, "Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai, ni suivi régulier. Ce dispositif ne remplace pas les services d'urgence (112)."));
       card.append(navRow(null, () => { state.circuitId = sel.value; state.step = 1; draw(); }));
     } else if (state.step === 1) {
       const origine = el('select', { class: 'field' }, el('option', { value: 'personnelle', selected: state.origine === 'personnelle' ? '' : null }, 'Démarche personnelle'), el('option', { value: 'adresse', selected: state.origine === 'adresse' ? '' : null }, 'Adressé(e) par un professionnel'));
-      const objectif = el('textarea', { class: 'field', rows: '2', placeholder: 'Objectif de la demande' }, state.objectif);
+      // Objectif principal en CHOIX FERMÉS (propre au circuit).
+      const objSel = el('select', { class: 'field' }, (circuit.objectives || ['Autre']).map((o) => el('option', { value: o, selected: o === state.objectif ? '' : null }, o)));
       const adressePar = el('input', { class: 'field', placeholder: 'Professionnel qui adresse (si applicable)', value: state.adressePar });
-      const relais = el('input', { class: 'field', placeholder: 'Relais prescripteur éventuel', value: state.relais });
-      card.append(el('h3', {}, 'Contexte'), el('label', { class: 'lbl' }, 'Origine'), origine, el('label', { class: 'lbl' }, 'Objectif'), objectif, el('label', { class: 'lbl' }, 'Adressé(e) par'), adressePar, el('label', { class: 'lbl' }, 'Relais prescripteur éventuel'), relais);
-      card.append(navRow(() => { state.step = 0; draw(); }, () => { state.origine = origine.value; state.objectif = objectif.value; state.adressePar = adressePar.value; state.relais = relais.value; state.step = 2; draw(); }));
+      const relais = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom), le cas échéant', value: state.relais });
+      const relaisCoord = el('input', { class: 'field', placeholder: 'Coordonnées du relais (e-mail/téléphone)', value: state.relaisCoord });
+      card.append(el('h3', {}, 'Contexte'),
+        el('label', { class: 'lbl' }, 'Origine de la démarche'), origine,
+        el('label', { class: 'lbl' }, 'Objectif principal'), objSel,
+        el('label', { class: 'lbl' }, 'Adressé(e) par'), adressePar,
+        el('label', { class: 'lbl' }, 'Relais prescripteur éventuel'), relais,
+        el('label', { class: 'lbl' }, 'Coordonnées du relais'), relaisCoord);
+      card.append(navRow(() => { state.step = 0; draw(); }, () => { state.origine = origine.value; state.objectif = objSel.value; state.adressePar = adressePar.value; state.relais = relais.value; state.relaisCoord = relaisCoord.value; state.step = 2; draw(); }));
     } else if (state.step === 2) {
       const dispos = el('input', { class: 'field', placeholder: 'Vos disponibilités générales', value: state.dispos });
       const note = el('textarea', { class: 'field', rows: '3', placeholder: 'Précisions libres (facultatif)' }, state.note);
       card.append(el('h3', {}, 'Disponibilités'), el('label', { class: 'lbl' }, 'Disponibilités'), dispos, el('label', { class: 'lbl' }, 'Précisions libres'), note);
       card.append(navRow(() => { state.step = 1; draw(); }, () => { state.dispos = dispos.value; state.note = note.value; state.step = 3; draw(); }));
     } else {
-      const c = store.circuitById(state.circuitId);
+      const c = circuit;
       const ack = el('input', { type: 'checkbox' });
       ack.checked = state.ack;
       card.append(el('h3', {}, 'Validation'),
-        el('div', { class: 'note-box' }, `Circuit : ${c.label}\nOrigine : ${state.origine}\nObjectif : ${state.objectif || '—'}\nRelais : ${state.relais || '—'}`),
-        el('label', { class: 'check' }, ack, ' J\'ai pris connaissance des limites du dispositif.'));
+        el('div', { class: 'note-box' }, `Circuit : ${c.label}\nOrigine : ${state.origine}\nObjectif : ${state.objectif || '—'}\nRelais : ${state.relais || '—'}${state.relaisCoord ? ' (' + state.relaisCoord + ')' : ''}`),
+        el('label', { class: 'check' }, ack, " Je confirme avoir compris les limites du dispositif et les consignes d'urgence (ce canal ne remplace pas le 112)."));
       const submit = el('button', { class: 'btn btn-primary', onclick: () => {
-        if (!ack.checked) { toast('Merci de valider la prise de connaissance des limites.', 'err'); return; }
-        const d = store.submitDemand({ circuitId: state.circuitId, origine: state.origine, objectif: state.objectif, adressePar: state.adressePar, relais: state.relais, dispos: state.dispos, note: state.note, ackLimites: true });
+        if (!ack.checked) { toast('Merci de confirmer la prise de connaissance des limites et consignes d\'urgence.', 'err'); return; }
+        const d = store.submitDemand({ circuitId: state.circuitId, origine: state.origine, objectif: state.objectif, adressePar: state.adressePar, relais: state.relais, relaisCoord: state.relaisCoord, dispos: state.dispos, note: state.note, ackLimites: true });
         demandSubmittedView(mount, d);
       } }, 'Transmettre la demande');
       card.append(el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => { state.step = 2; draw(); } }, 'Précédent'), submit));
@@ -338,6 +352,7 @@ function render(mount) {
   const upcoming = store.appointmentsOf(patient.id).filter((a) => a.status === 'planifie')
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
   const onWaitlist = store.waitlist().some((w) => w.patientId === patient.id);
+  const canWaitlist = rules.canJoinWaitlist(store.appointments(), patient.id, new Date());
 
   mount.appendChild(el('div', { class: 'card' },
     el('div', { class: 'card-head' },
@@ -353,9 +368,11 @@ function render(mount) {
     el('div', { class: 'action-grid' },
       el('button', { class: 'btn btn-tile', onclick: () => requestView(mount, patient) },
         el('strong', {}, 'Signaler une demande'), el('span', { class: 'muted small' }, 'Parler, ordonnance, rapport…')),
-      el('button', { class: 'btn btn-tile', onclick: () => waitlistPrefsView(mount, patient) },
+      el('button', { class: 'btn btn-tile', disabled: (canWaitlist || onWaitlist) ? null : '',
+        title: (canWaitlist || onWaitlist) ? null : "Accessible uniquement si vous avez un rendez-vous à venir à avancer.",
+        onclick: () => { if (!canWaitlist && !onWaitlist) { toast("La liste de désistement n'est accessible que si vous avez déjà un rendez-vous à venir.", 'err'); return; } waitlistPrefsView(mount, patient); } },
         el('strong', {}, onWaitlist ? 'Mes préférences de désistement' : 'Liste de désistement'),
-        el('span', { class: 'muted small' }, onWaitlist ? 'Modifier jours, horaires, délai' : 'Avancer votre prochain rendez-vous')),
+        el('span', { class: 'muted small' }, onWaitlist ? 'Modifier jours, horaires, délai' : (canWaitlist ? 'Avancer votre prochain rendez-vous' : 'Nécessite un rendez-vous à venir'))),
     ),
     onWaitlist ? el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { store.leaveWaitlist(patient.id); toast('Retiré de la liste de désistement.'); render(mount); } }, 'Quitter le désistement')) : null,
   ));

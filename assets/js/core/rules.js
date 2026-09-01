@@ -97,6 +97,19 @@ export function bookingCapReached(appointments, patient, cadence, now = new Date
   return futurePlanned(appointments, patient.id, now).length >= cap;
 }
 
+// Éligibilité à la liste de désistement : uniquement une personne déjà suivie
+// ayant AU MOINS un rendez-vous futur planifié (celui qu'elle cherche à avancer).
+export function canJoinWaitlist(appointments, patientId, now = new Date()) {
+  return futurePlanned(appointments, patientId, now).length > 0;
+}
+
+// Autorisation d'instauration/adaptation médicamenteuse : uniquement si un relais
+// prescripteur est identifié et confirmé. Les consultations initiales, elles, ne
+// sont pas bloquées par l'absence de relais.
+export function canAdaptMedication(demand) {
+  return !!(demand && demand.relais);
+}
+
 // --- Déplacement d'UN rdv, sans décaler la série ---
 // La nouvelle date doit être un créneau ouvert (openSlots), futur, non occupé.
 // On NE valide QUE ce rdv (les autres rdv du patient ne bougent pas).

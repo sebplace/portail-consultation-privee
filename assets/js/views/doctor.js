@@ -43,13 +43,14 @@ function accueilTab(mount) {
     tile(s.upcoming, 'RDV à venir', () => { tab = 'agenda'; render(mount); }),
   );
 
+  const capInfo = store.avisCapacityInfo();
   const occ = el('div', { class: 'card' },
     el('h3', {}, 'Occupation (4 prochaines semaines)'),
     gauge(s.occupancy, false),
-    el('div', { class: 'muted small' }, `${s.occupancy}% des créneaux ouverts sont réservés.`),
+    el('div', { class: 'muted small' }, `${s.occupancy}% des créneaux ordinaires ouverts sont réservés.`),
     el('h3', { style: 'margin-top:14px' }, "Capacité avis / parcours (4 semaines)"),
-    gauge(Math.round((s.avisNext / s.avisCapacity.max) * 100), s.avisNext > s.avisCapacity.max),
-    el('div', { class: 'muted small' }, `${s.avisNext} séance(s) d'avis planifiée(s) sur un maximum de ${s.avisCapacity.max} (cible ${s.avisCapacity.target}).`),
+    gauge(Math.round((capInfo.used / capInfo.max) * 100), capInfo.used > capInfo.max),
+    el('div', { class: 'muted small' }, `${capInfo.used} séance(s) d'avis planifiée(s) sur ${capInfo.max} (base ${capInfo.base}${capInfo.extra ? ` + ${capInfo.extra} ponctuel(s)` : ''}, plafond ${capInfo.ceiling}). Restant : ${capInfo.remaining}.`),
   );
 
   const nextClosure = (store.doctor().closures || []).map((c) => c).sort((a, b) => new Date(a.from) - new Date(b.from))[0];
@@ -172,7 +173,7 @@ function interventionTab(mount) {
 // --- FILES ---
 function filesTab(mount) {
   const now = new Date();
-  store.purgeWaitlist(now); store.processOffers(now);
+  store.purgeWaitlist(now); store.processOffers(now); store.processInvitations(now);
   const wl = store.waitlist().map((w) => ({ w, p: store.patientById(w.patientId) }));
   const offers = store.offers().filter((o) => o.status === 'en cours');
   const demands = [...store.demands()].sort((a, b) => (a.priority || 0) - (b.priority || 0));
@@ -218,49 +219,148 @@ function filesTab(mount) {
 
 function demandRow(mount, d) {
   const c = store.circuitById(d.circuitId);
+  const now = new Date();
   const actions = [];
   if (d.status === 'deposee') {
     actions.push(el('button', { class: 'btn btn-primary', onclick: () => { const r = store.acceptDemand(d.id); toast(r.status === 'acceptee-conditionnelle' ? 'Acceptée (relais en attente).' : 'Acceptée.'); render(mount); } }, 'Accepter'));
     actions.push(el('button', { class: 'btn btn-ghost danger', onclick: () => { store.refuseDemand(d.id); toast('Refusée.'); render(mount); } }, 'Refuser'));
   }
+  // Démarrage des consultations INITIALES possible dès acceptation ferme OU conditionnelle.
+  if (['acceptee', 'acceptee-conditionnelle'].includes(d.status) && !d.circuitInstanceId) {
+    actions.push(el('button', { class: 'btn btn-primary', onclick: () => startCircuit(mount, d) }, 'Démarrer les consultations initiales'));
+  }
   if (d.status === 'acceptee-conditionnelle') {
     actions.push(el('button', { class: 'btn btn-ghost', onclick: () => relayModal(mount, d) }, 'Identifier le relais'));
   }
-  if (d.status === 'acceptee') actions.push(el('button', { class: 'btn btn-primary', onclick: () => startCircuit(mount, d) }, 'Démarrer (atomique)'));
+  // Relais manquant : relance possible même après démarrage des initiales.
+  if (d.relais === '' && c && (c.medication || (c.phases && c.therapeuticMedication)) && d.circuitInstanceId && d.status !== 'close') {
+    actions.push(el('button', { class: 'btn btn-ghost', onclick: () => relayModal(mount, d) }, 'Identifier le relais'));
+  }
+  // Circuit démarré : gestion du parcours.
+  const circuitStarted = !!d.circuitInstanceId;
+  if (circuitStarted && d.status !== 'close') {
+    // Bloc thérapeutique (TDAH) : décision médicale distincte.
+    if (c && c.therapeuticNeedsDecision && !d.therapeuticStarted) {
+      actions.push(el('button', { class: 'btn btn-ghost', onclick: () => openTherapeutic(mount, d) }, `Ouvrir le bloc thérapeutique (${c.phases.therapeutique})`));
+    }
+    // Adaptation médicamenteuse : bloquée sans relais.
+    if (c && (c.medication || (c.phases && c.therapeuticMedication))) {
+      const canMed = !!d.relais;
+      actions.push(el('button', { class: 'btn ' + (canMed ? 'btn-ghost' : 'btn-ghost'), disabled: canMed ? null : '',
+        title: canMed ? null : "Relais prescripteur non identifié : adaptation médicamenteuse bloquée.",
+        onclick: () => { const r = store.clearMedication(d.id); if (r.error) toast(r.message, 'err'); else toast('Adaptation médicamenteuse autorisée.'); render(mount); } },
+        d.medicationCleared ? 'Adaptation autorisée ✓' : 'Autoriser l\'adaptation médicamenteuse'));
+    }
+    actions.push(el('button', { class: 'btn btn-ghost', onclick: () => extendModal(mount, d) }, 'Prolonger'));
+    actions.push(el('button', { class: 'btn btn-ghost danger', onclick: () => { const n = store.closeCircuitEarly(d.circuitInstanceId); toast(`Parcours raccourci : ${n} consultation(s) libérée(s).`); render(mount); } }, 'Raccourcir'));
+  }
   const prio = el('input', { class: 'field mini', type: 'number', value: String(d.priority || 0), title: 'Priorité' });
   prio.addEventListener('change', () => { store.setPriority(d.id, prio.value); toast('Priorité mise à jour.'); });
+
+  const sessions = circuitStarted ? store.appointments().filter((a) => a.circuitInstanceId === d.circuitInstanceId && a.status === 'planifie').length : 0;
+  const medBlocked = c && (c.medication || (c.phases && c.therapeuticMedication)) && !d.relais;
+
   return el('div', { class: 'row-item stack' },
     el('div', {},
       el('div', { class: 'row-title' }, `${c ? c.label : d.circuitId} `, el('span', { class: 'pill' + (String(d.status).startsWith('accept') ? ' warn' : '') }, store.DEMAND_STATUSES[d.status] || d.status), `  réf. `, el('span', { class: 'ref-code' }, d.id.slice(-6).toUpperCase())),
-      el('div', { class: 'muted small' }, `déposée ${fmtDate(d.createdAt)} · origine ${d.origine}${d.adressePar ? ' · adressé par ' + d.adressePar : ''}${c && c.needsRelay ? ` · relais : ${d.relais || 'à identifier'}` : ''}`),
+      el('div', { class: 'muted small' }, `déposée ${fmtDate(d.createdAt)} · origine ${d.origine}${d.adressePar ? ' · adressé par ' + d.adressePar : ''} · relais : ${d.relais || 'à identifier'}${d.relaisCoord ? ' (' + d.relaisCoord + ')' : ''}`),
       d.objectif ? el('div', { class: 'muted small' }, 'Objectif : ' + d.objectif) : null,
-      (c && c.needsRelay && !d.relais) ? el('div', { class: 'notice info small' }, "Adaptation médicamenteuse impossible tant que le relais prescripteur n'est pas identifié.") : null,
+      circuitStarted ? el('div', { class: 'muted small' }, `Parcours : ${sessions} consultation(s) à venir${d.therapeuticStarted ? ' · bloc thérapeutique ouvert' : ''}${d.medicationCleared ? ' · adaptation médicamenteuse autorisée' : ''}`) : null,
+      medBlocked ? el('div', { class: 'notice info small' }, "Consultations initiales possibles, mais aucune instauration/adaptation médicamenteuse tant que le relais prescripteur n'est pas identifié.") : null,
     ),
     el('div', { class: 'row-actions wrap' }, ...actions, (d.status !== 'refusee' && d.status !== 'close') ? el('label', { class: 'lbl inline' }, 'Priorité', prio) : null),
   );
 }
 
 function relayModal(mount, d) {
-  const input = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom)' });
-  const m = modal('Identifier le relais prescripteur', [input], [
+  const input = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom)' , value: d.relais || '' });
+  const coord = el('input', { class: 'field', placeholder: 'Coordonnées (e-mail/téléphone)', value: d.relaisCoord || '' });
+  const m = modal('Identifier le relais prescripteur', [el('label', { class: 'lbl' }, 'Nom'), input, el('label', { class: 'lbl' }, 'Coordonnées'), coord], [
     el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
-    el('button', { class: 'btn btn-primary', onclick: () => { if (!input.value) { toast('Saisissez un relais.', 'err'); return; } store.setRelay(d.id, input.value); m.close(); toast('Relais enregistré.'); render(mount); } }, 'Enregistrer'),
+    el('button', { class: 'btn btn-primary', onclick: () => { if (!input.value) { toast('Saisissez un relais.', 'err'); return; } d.relaisCoord = coord.value; store.setRelay(d.id, input.value); m.close(); toast('Relais enregistré.'); render(mount); } }, 'Enregistrer'),
   ]);
+}
+
+function seriesPreview(count, spacing, now) {
+  const av = store.avisOpenSlots({ now });
+  return rules.proposeSeries({ openSlots: av, count, spacingDays: spacing, marginDays: 3, now });
 }
 
 function startCircuit(mount, d) {
   const c = store.circuitById(d.circuitId);
   const now = new Date();
-  const open = store.openSlots({ now });
-  const serie = rules.proposeSeries({ openSlots: open, count: c.initialSessions, spacingDays: c.spacingDays, marginDays: 6, now });
-  if (!serie) { toast(`Série de ${c.initialSessions} non garantie sur l'horizon — parcours non démarré.`, 'err'); return; }
+  // Espacement 14 jours PAR DÉFAUT, modifiable par le médecin.
+  const spacingInput = el('input', { class: 'field mini', type: 'number', min: '1', value: String(c.spacingDays) });
+  const previewBox = el('div', { class: 'note-box' }, '');
+  let serie = null;
+  const refresh = () => {
+    serie = seriesPreview(c.initialSessions, Number(spacingInput.value) || c.spacingDays, now);
+    previewBox.textContent = serie ? serie.map((s) => fmtDateTime(s)).join('\n') : `Série de ${c.initialSessions} non garantie sur les créneaux d'avis.`;
+  };
+  spacingInput.addEventListener('change', refresh); setTimeout(refresh, 0);
+  const cap = store.avisCapacityInfo(now);
+  const m = modal(`Démarrer — ${c.label}`, [
+    el('p', { class: 'muted small' }, `Réservation d'un seul bloc de ${c.initialSessions} consultation(s) initiale(s) sur les créneaux d'avis (mardi 16:00 / jeudi 11:30). En production, l'atomicité sera garantie côté serveur.`),
+    el('div', { class: 'muted small' }, `Capacité avis : ${cap.used}/${cap.max} sur ${cap.windowDays / 7} semaines.`),
+    el('label', { class: 'lbl' }, 'Espacement (jours, défaut 14)'), spacingInput,
+    el('label', { class: 'lbl' }, 'Aperçu de la série'), previewBox,
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => {
+      if (!serie) { toast('Série non garantie — parcours non démarré.', 'err'); return; }
+      const res = store.startCircuitAtomic(d.id, serie.map((s) => s.toISOString()));
+      if (res && res.error) { toast(res.message, 'err'); m.close(); render(mount); return; }
+      m.close(); toast(`Consultations initiales réservées : ${res.created.length}. Invitation 7 jours.`); render(mount);
+    } }, 'Réserver le bloc initial'),
+  ]);
+}
+
+function openTherapeutic(mount, d) {
+  const c = store.circuitById(d.circuitId);
+  const now = new Date();
+  const count = c.phases.therapeutique;
+  const av = store.avisOpenSlots({ now });
+  // Démarre après les consultations initiales existantes.
+  const last = store.appointments().filter((a) => a.circuitInstanceId === d.circuitInstanceId && a.status === 'planifie').map((a) => new Date(a.datetime)).sort((a, b) => b - a)[0] || now;
+  const serie = rules.proposeSeries({ openSlots: av, count, spacingDays: c.spacingDays, marginDays: 3, startFrom: new Date(last.getTime() + 24 * 3600 * 1000), now });
+  if (!serie) { toast('Bloc thérapeutique non garanti sur les créneaux d\'avis.', 'err'); return; }
   const preview = serie.map((s) => fmtDateTime(s)).join('\n');
-  confirmDialog(`Réserver atomiquement ${c.initialSessions} consultations :\n\n${preview}`, { okLabel: 'Confirmer' }).then((ok) => {
+  confirmDialog(`Décision médicale : ouvrir le bloc thérapeutique (${count} consultations) ?\n\n${preview}\n\nCeci n'autorise pas l'adaptation médicamenteuse (relais requis).`, { okLabel: 'Ouvrir le bloc' }).then((ok) => {
     if (!ok) return;
-    const res = store.startCircuitAtomic(d.id, serie.map((s) => s.toISOString()));
+    const res = store.openTherapeuticBlock(d.id, serie.map((s) => s.toISOString()));
     if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
-    toast(`Parcours démarré : ${res.created.length} consultations. Invitation 7 jours.`); render(mount);
+    toast(`Bloc thérapeutique ouvert : ${res.created.length} consultations.`); render(mount);
   });
+}
+
+function extendModal(mount, d) {
+  const now = new Date();
+  const c = store.circuitById(d.circuitId);
+  const nInput = el('input', { class: 'field mini', type: 'number', min: '1', value: '1' });
+  const previewBox = el('div', { class: 'note-box' }, '');
+  let serie = null;
+  const cap = store.avisCapacityInfo(now);
+  const refresh = () => {
+    const n = Number(nInput.value) || 1;
+    const av = store.avisOpenSlots({ now });
+    const last = store.appointments().filter((a) => a.circuitInstanceId === d.circuitInstanceId && a.status === 'planifie').map((a) => new Date(a.datetime)).sort((a, b) => b - a)[0] || now;
+    serie = rules.proposeSeries({ openSlots: av, count: n, spacingDays: c.spacingDays, marginDays: 3, startFrom: new Date(last.getTime() + 24 * 3600 * 1000), now });
+    previewBox.textContent = serie ? `${serie.length} consultation(s) :\n` + serie.map((s) => fmtDateTime(s)).join('\n') + `\n\nCapacité avis après ajout : ${cap.used + serie.length}/${cap.max}.` : 'Ajout non garanti (capacité/créneaux d\'avis insuffisants).';
+  };
+  nInput.addEventListener('change', refresh); setTimeout(refresh, 0);
+  const m = modal('Prolonger le parcours', [
+    el('p', { class: 'muted small' }, "Ajout de consultations sans plafond clinique artificiel, sous réserve de la capacité disponible. Impact visible ci-dessous."),
+    el('label', { class: 'lbl' }, 'Nombre de consultations à ajouter'), nInput,
+    previewBox,
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => {
+      if (!serie) { toast('Ajout non garanti.', 'err'); return; }
+      const res = store.extendCircuit(d.circuitInstanceId, serie.map((s) => s.toISOString()));
+      if (res && res.error) { toast(res.message, 'err'); return; }
+      m.close(); toast(`Parcours prolongé de ${res.length} consultation(s).`); render(mount);
+    } }, 'Valider la prolongation'),
+  ]);
 }
 
 // --- RÈGLES ---
@@ -392,13 +492,16 @@ function dispoTab(mount) {
     el('h3', {}, 'Trame hebdomadaire'),
     el('p', { class: 'muted small' }, `Durée des consultations : ${d.slotDurationMin} min · Intervalle entre les créneaux (min) : ${d.slotDurationMin} · Horizon : ${d.horizonWeeks} semaines`),
     el('div', { class: 'list' }, wdList.map((wd) => el('div', { class: 'row-item' },
-      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd)), el('div', { class: 'muted small' }, d.weeklyTemplate[wd].join(' · '))),
+      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd) + ' — suivis ordinaires'), el('div', { class: 'muted small' }, d.weeklyTemplate[wd].join(' · '))),
     ))),
+    el('div', { class: 'notice info small' }, `Créneaux d'avis dédiés (réservés aux circuits, exclus des suivis ordinaires) : ${Object.entries(d.avisTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}. Base 8 séances / 4 semaines.`),
     el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}.`),
-    Object.keys(d.protectedTemplate || {}).length ? el('div', { class: 'notice info small' }, `Créneaux protégés (réservés, non publics) : ${Object.entries(d.protectedTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}.`) : null,
-    el('div', { class: 'row-actions end' },
+    el('div', { class: 'row-actions wrap end' },
       el('button', { class: 'btn btn-ghost', onclick: () => authorizeEmergencyPrompt(mount) }, 'Autoriser une urgence 12:15'),
+      el('button', { class: 'btn btn-ghost', onclick: () => addExtraAvisModal(mount) }, 'Ajouter un créneau d\'avis ponctuel'),
+      el('button', { class: 'btn btn-ghost', onclick: () => convertAvisModal(mount) }, 'Convertir un créneau d\'avis en ordinaire'),
     ),
+    avisCapacityCard(),
   );
 
   const closures = el('div', { class: 'card' },
@@ -436,6 +539,44 @@ function authorizeEmergencyPrompt(mount) {
 
 // --- MIGRATION ---
 let migrationRows = null;
+function avisCapacityCard() {
+  const cap = store.avisCapacityInfo();
+  return el('div', { class: 'sub' },
+    el('div', { class: 'muted small' }, `Capacité avis (4 semaines) : ${cap.used}/${cap.max} utilisée (base ${cap.base}${cap.extra ? ` + ${cap.extra} ponctuel(s)` : ''}, plafond ${cap.ceiling}).`),
+    el('div', { class: 'gauge' + (cap.used > cap.max ? ' over' : '') }, el('span', { style: `width:${Math.min(100, Math.round((cap.used / cap.max) * 100))}%` })),
+  );
+}
+
+function addExtraAvisModal(mount) {
+  const now = new Date();
+  const av = store.avisOpenSlots({ now });
+  if (!av.length) { toast("Aucun créneau d'avis disponible à proposer.", 'err'); return; }
+  const sel = el('select', { class: 'field' }, av.slice(0, 40).map((s) => el('option', { value: s.start.toISOString() }, fmtDateTime(s.start))));
+  const cap = store.avisCapacityInfo(now);
+  const m = modal("Ajouter un créneau d'avis ponctuel", [
+    el('p', { class: 'muted small' }, `Porte la capacité de ${cap.base} à ${cap.ceiling} (maximum 2 créneaux ponctuels sur 4 semaines). Aperçu de l'impact ci-dessous.`),
+    el('div', { class: 'muted small' }, `Capacité actuelle : ${cap.used}/${cap.max}. Après ajout : ${cap.used}/${Math.min(cap.ceiling, cap.max + 1)}.`),
+    el('label', { class: 'lbl' }, 'Créneau d\'avis'), sel,
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { const r = store.addExtraAvisSlot(sel.value, { now }); if (r.error) toast(r.message, 'err'); else { m.close(); toast('Créneau d\'avis ponctuel ajouté.'); render(mount); } } }, 'Ajouter'),
+  ]);
+}
+
+function convertAvisModal(mount) {
+  const now = new Date();
+  const av = store.avisOpenSlots({ now });
+  if (!av.length) { toast("Aucun créneau d'avis inutilisé à convertir.", 'err'); return; }
+  const sel = el('select', { class: 'field' }, av.slice(0, 40).map((s) => el('option', { value: s.start.toISOString() }, fmtDateTime(s.start))));
+  const m = modal("Convertir un créneau d'avis en suivi ordinaire", [
+    el('p', { class: 'muted small' }, "Décision manuelle : un créneau d'avis inutilisé devient réservable comme suivi ordinaire. Il n'est jamais converti automatiquement."),
+    el('label', { class: 'lbl' }, 'Créneau d\'avis'), sel,
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { const r = store.convertAvisSlotToOrdinary(sel.value); if (r.error) toast(r.message, 'err'); else { m.close(); toast('Créneau converti en suivi ordinaire.'); render(mount); } } }, 'Convertir'),
+  ]);
+}
+
 function migrationTab(mount) {
   const ta = el('textarea', { class: 'field mono', rows: '7' }, store.get().fakeCsv);
   const preview = el('div', {});

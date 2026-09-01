@@ -5,7 +5,7 @@ import { buildSeed } from '../data/seed.js';
 import * as avail from './availability.js';
 import * as rules from './rules.js';
 
-const KEY = 'pcp.state.v4';
+const KEY = 'pcp.state.v5';
 let state = null;
 const listeners = new Set();
 
@@ -14,7 +14,7 @@ export function load() {
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      state = (parsed && parsed.version === 4) ? parsed : buildSeed(new Date());
+      state = (parsed && parsed.version === 5) ? parsed : buildSeed(new Date());
     } catch { state = buildSeed(new Date()); }
   } else {
     state = buildSeed(new Date());
@@ -30,6 +30,12 @@ function uid(p) { return `${p}-${Date.now().toString(36)}-${Math.random().toStri
 
 // --- Sélecteurs de base ---
 export function doctor() { return get().doctor; }
+// Jours de semaine où il y a réellement des consultations ordinaires (1=lundi..7=dimanche).
+export function consultationWeekdays() {
+  const d = doctor();
+  const set = new Set([...Object.keys(d.weeklyTemplate || {}), ...Object.keys(d.avisTemplate || {})].map(Number));
+  return [...set].sort();
+}
 export function circuits() { return get().circuits; }
 export function circuitById(id) { return get().circuits.find((c) => c.id === id); }
 export function patients() { return get().patients; }
@@ -52,11 +58,18 @@ export function migrations() { return get().migrations; }
 export function logEntries() { return [...get().log].reverse(); }
 
 // --- Disponibilité : créneaux ouverts (publics) ---
-export function openSlots({ now = new Date(), weeks, includeEmergency = false } = {}) {
+export function openSlots({ now = new Date(), weeks, includeEmergency = false, includeAvis = false } = {}) {
   const d = doctor();
   const from = new Date(now.getTime());
   const to = new Date(now.getTime() + (weeks || d.horizonWeeks) * 7 * 24 * 3600 * 1000);
-  return avail.generateOpenSlots({ doctor: d, appointments: appointments(), from, to, now, includeEmergency });
+  return avail.generateOpenSlots({ doctor: d, appointments: appointments(), from, to, now, includeEmergency, includeAvis });
+}
+// Créneaux d'AVIS ouverts (réservés aux circuits).
+export function avisOpenSlots({ now = new Date(), weeks } = {}) {
+  const d = doctor();
+  const from = new Date(now.getTime());
+  const to = new Date(now.getTime() + (weeks || d.horizonWeeks) * 7 * 24 * 3600 * 1000);
+  return avail.generateOpenSlots({ doctor: d, appointments: appointments(), from, to, now, includeAvis: true }).filter((s) => s.avis);
 }
 
 // --- Journal ---
@@ -245,7 +258,11 @@ export function useEmergencyAuth(authId, { actor = 'secretariat' } = {}) {
 // Inscription expire au prochain rdv du patient. Offre successive 48h.
 // prefs = { weekdays:[1..7]|null, timeFrom:'HH:MM'|null, timeTo:'HH:MM'|null, minDelayHours:number }
 export function joinWaitlist(patientId, { actor = 'patient', prefs = {} } = {}) {
-  if (get().waitlist.some((w) => w.patientId === patientId)) return;
+  // Éligibilité : uniquement une personne ayant un rendez-vous FUTUR planifié.
+  if (!rules.canJoinWaitlist(get().appointments, patientId, new Date())) {
+    return { error: 'no-future', message: "Inscription possible uniquement si vous avez un rendez-vous à venir à avancer." };
+  }
+  if (get().waitlist.some((w) => w.patientId === patientId)) return { error: 'already' };
   const next = futureAppointmentsOf(patientId).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0] || null;
   get().waitlist.push({
     patientId, createdAt: new Date().toISOString(), expiresAt: next ? next.toISOString() : null,
@@ -256,6 +273,7 @@ export function joinWaitlist(patientId, { actor = 'patient', prefs = {} } = {}) 
   });
   logOp(actor, 'désistement inscription', patientId);
   save();
+  return { ok: true };
 }
 export function updateWaitlistPrefs(patientId, prefs) {
   const w = get().waitlist.find((x) => x.patientId === patientId);
@@ -268,10 +286,11 @@ export function leaveWaitlist(patientId) {
   get().waitlist = get().waitlist.filter((w) => w.patientId !== patientId);
   save();
 }
-// Purge les inscriptions expirées (prochain rdv passé/atteint).
+// Purge : une inscription n'est valable que tant qu'il reste un rdv futur planifié
+// (couvre l'arrivée du rdv, son annulation, ou son remplacement par un rdv avancé).
 export function purgeWaitlist(now = new Date()) {
   const before = get().waitlist.length;
-  get().waitlist = get().waitlist.filter((w) => !w.expiresAt || new Date(w.expiresAt) > now);
+  get().waitlist = get().waitlist.filter((w) => rules.canJoinWaitlist(get().appointments, w.patientId, now));
   if (get().waitlist.length !== before) save();
 }
 function slotMatchesPrefs(candidate, prefs, now) {
@@ -353,6 +372,25 @@ export function processOffers(now = new Date()) {
   return changed;
 }
 
+// Cycle d'invitation (simulé en démo) : rappel au 5e jour, retour en file après la
+// 1re absence de réponse à 7 jours, clôture après la 2e. Libère les créneaux tenus.
+export function processInvitations(now = new Date()) {
+  let changed = false;
+  for (const d of get().demands) {
+    if (d.status !== 'invitee') continue;
+    if (d.reminderAt && !d.reminded && new Date(d.reminderAt) <= now) { d.reminded = true; changed = true; logOp('systeme', 'rappel invitation J-5', d.id); }
+    if (d.inviteExpiresAt && new Date(d.inviteExpiresAt) <= now) {
+      // Libère les créneaux tenus de la série.
+      get().appointments.filter((a) => a.circuitInstanceId === d.circuitInstanceId && a.status === 'planifie').forEach((a) => { a.status = 'annule'; });
+      if ((d.invitations || 0) >= 2) { d.status = 'close'; logOp('systeme', 'demande clôturée (2 sans réponse)', d.id); }
+      else { d.status = 'acceptee'; d.circuitInstanceId = null; d.reminded = false; logOp('systeme', 'invitation expirée, retour en file', d.id); }
+      changed = true;
+    }
+  }
+  if (changed) save();
+  return changed;
+}
+
 // --- File 2 : avis / parcours ciblés (NOUVELLE demande) ---
 export const DEMAND_STATUSES = {
   deposee: 'Déposée', acceptee: 'Acceptée', 'acceptee-conditionnelle': 'Acceptée (relais en attente)',
@@ -362,8 +400,8 @@ export function submitDemand(payload) {
   const d = {
     id: uid('dem'), createdAt: new Date().toISOString(), status: 'deposee',
     circuitId: payload.circuitId, objectif: payload.objectif || '', origine: payload.origine || 'personnelle',
-    adressePar: payload.adressePar || '', relais: payload.relais || '', dispos: payload.dispos || '',
-    note: payload.note || '', ackLimites: !!payload.ackLimites,
+    adressePar: payload.adressePar || '', relais: payload.relais || '', relaisCoord: payload.relaisCoord || '',
+    dispos: payload.dispos || '', note: payload.note || '', ackLimites: !!payload.ackLimites,
     invitations: 0, priority: 0,
   };
   get().demands.push(d);
@@ -396,7 +434,8 @@ export function setRelay(demandId, relais) {
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return null;
   d.relais = relais;
-  if (d.status === 'acceptee-conditionnelle' && relais) { d.status = 'acceptee'; logOp('medecin', 'relais identifié', d.id); }
+  if (relais && d.status === 'acceptee-conditionnelle') { d.status = 'acceptee'; }
+  logOp('medecin', 'relais identifié', `${d.id} = ${relais}`);
   save();
   return d;
 }
@@ -408,39 +447,107 @@ export function setPriority(demandId, priority) {
   return d;
 }
 
-// --- Circuits : réservation ATOMIQUE de la série initiale ---
-// On associe la demande à un patient (démo : on réutilise un faux patient ou on crée un léger profil).
+// Autorisation d'adaptation médicamenteuse : possible UNIQUEMENT si un relais est
+// identifié. Les consultations initiales ne sont pas bloquées par son absence.
+export function clearMedication(demandId) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return { error: 'notfound' };
+  if (!rules.canAdaptMedication(d)) return { error: 'no-relay', message: "Relais prescripteur non identifié : adaptation médicamenteuse impossible." };
+  d.medicationCleared = true;
+  logOp('medecin', 'adaptation médicamenteuse autorisée', `${d.id} (relais ${d.relais})`);
+  save();
+  return { ok: true };
+}
+
+// --- Capacité d'avis (séances de circuit) sur 4 semaines glissantes ---
+export function avisCapacityInfo(now = new Date()) {
+  const cap = doctor().avisCapacity;
+  const to = new Date(now.getTime() + cap.windowDays * 24 * 3600 * 1000);
+  const used = get().appointments.filter((a) => a.circuitInstanceId && a.status === 'planifie' && new Date(a.datetime) > now && new Date(a.datetime) <= to).length;
+  const extra = (doctor().extraAvisSlots || []).filter((iso) => { const d = new Date(iso); return d > now && d <= to; }).length;
+  const max = cap.base + Math.min(extra, cap.maxExtra); // 8 de base, +2 max par créneaux ponctuels
+  return { used, base: cap.base, extra, max, ceiling: cap.max, remaining: Math.max(0, max - used), windowDays: cap.windowDays };
+}
+// Ajout d'un créneau d'avis ponctuel (max 2 dans la fenêtre de 4 semaines).
+export function addExtraAvisSlot(datetimeISO, { now = new Date() } = {}) {
+  const cap = doctor().avisCapacity;
+  const start = new Date(datetimeISO);
+  const to = new Date(now.getTime() + cap.windowDays * 24 * 3600 * 1000);
+  const inWindow = (doctor().extraAvisSlots || []).filter((iso) => { const d = new Date(iso); return d > now && d <= to; }).length;
+  if (inWindow >= cap.maxExtra) return { error: 'limit', message: `Maximum ${cap.maxExtra} créneaux d'avis ponctuels par période de ${cap.windowDays / 7} semaines.` };
+  if (overlapsBooked(datetimeISO, doctor().slotDurationMin)) return { error: 'clash', message: 'Créneau déjà occupé.' };
+  doctor().extraAvisSlots.push(datetimeISO);
+  logOp('medecin', 'créneau avis ponctuel ajouté', datetimeISO);
+  save();
+  return { ok: true };
+}
+// Conversion MANUELLE d'un créneau d'avis inutilisé en suivi ordinaire.
+export function convertAvisSlotToOrdinary(datetimeISO) {
+  if (overlapsBooked(datetimeISO, doctor().slotDurationMin)) return { error: 'clash', message: 'Créneau déjà occupé.' };
+  if (!doctor().convertedAvisSlots.includes(datetimeISO)) doctor().convertedAvisSlots.push(datetimeISO);
+  logOp('medecin', 'créneau avis converti en ordinaire', datetimeISO);
+  save();
+  return { ok: true };
+}
+
+// --- Circuits : réservation ATOMIQUE de la série INITIALE uniquement ---
+// Autorisé sous acceptation ferme OU conditionnelle (les consultations initiales
+// ne dépendent pas du relais). Pour le TDAH : réserve seulement les 3 initiales.
 export function startCircuitAtomic(demandId, seriesISO, { patientId } = {}) {
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return { error: 'notfound' };
-  // Re-vérifie que TOUS les créneaux sont encore libres (atomicité).
+  if (!['acceptee', 'acceptee-conditionnelle'].includes(d.status)) return { error: 'state', message: 'La demande doit être acceptée (ferme ou conditionnelle).' };
   for (const isoDt of seriesISO) {
-    if (overlapsBooked(isoDt, doctor().slotDurationMin)) {
-      return { error: 'clash', message: `Le créneau ${isoDt} n'est plus libre — série non démarrée.` };
-    }
+    if (overlapsBooked(isoDt, doctor().slotDurationMin)) return { error: 'clash', message: `Le créneau ${isoDt} n'est plus libre — série non démarrée.` };
   }
   const instanceId = uid('circ');
   const created = seriesISO.map((isoDt) => {
-    const a = { id: uid('a'), patientId: patientId || d.id, datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId };
+    const a = { id: uid('a'), patientId: patientId || d.id, datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId, phase: 'initiale' };
     get().appointments.push(a);
     return a;
   });
   d.status = 'invitee';
   d.circuitInstanceId = instanceId;
+  d.phaseStarted = 'initiale';
   d.invitations = (d.invitations || 0) + 1;
   d.invitedAt = new Date().toISOString();
+  d.reminderAt = new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString();
   d.inviteExpiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
-  logOp('medecin', 'circuit démarré (atomique)', `${d.id} instance=${instanceId} n=${created.length}`);
+  logOp('medecin', 'circuit démarré (série initiale)', `${d.id} instance=${instanceId} n=${created.length}`);
   save();
   return { instanceId, created };
 }
+
+// Ouverture du bloc THÉRAPEUTIQUE (ex. TDAH +3) : décision médicale DISTINCTE,
+// jamais automatique. N'ouvre pas l'adaptation médicamenteuse (voir clearMedication).
+export function openTherapeuticBlock(demandId, seriesISO) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return { error: 'notfound' };
+  const c = circuitById(d.circuitId);
+  if (!c || !c.phases || !c.therapeuticNeedsDecision) return { error: 'unsupported', message: 'Ce circuit n\'a pas de bloc thérapeutique distinct.' };
+  if (!d.circuitInstanceId) return { error: 'no-instance', message: 'Le bloc initial doit d\'abord être démarré.' };
+  if (d.therapeuticStarted) return { error: 'already', message: 'Bloc thérapeutique déjà ouvert.' };
+  for (const isoDt of seriesISO) {
+    if (overlapsBooked(isoDt, doctor().slotDurationMin)) return { error: 'clash', message: `Le créneau ${isoDt} n'est plus libre.` };
+  }
+  const created = seriesISO.map((isoDt) => {
+    const a = { id: uid('a'), patientId: d.id, datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: d.circuitInstanceId, phase: 'therapeutique' };
+    get().appointments.push(a);
+    return a;
+  });
+  d.therapeuticStarted = true;
+  logOp('medecin', 'bloc thérapeutique ouvert (décision médicale)', `${d.id} n=${created.length}`);
+  save();
+  return { created };
+}
+
 // Prolongation / clôture (décision humaine, journalisée). Pas de plafond clinique.
 export function extendCircuit(instanceId, addSeriesISO) {
   for (const isoDt of addSeriesISO) {
     if (overlapsBooked(isoDt, doctor().slotDurationMin)) return { error: 'clash', message: `Créneau ${isoDt} occupé.` };
   }
   const created = addSeriesISO.map((isoDt) => {
-    const a = { id: uid('a'), patientId: circuitPatient(instanceId), datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId };
+    const a = { id: uid('a'), patientId: circuitPatient(instanceId), datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId, phase: 'prolongation' };
     get().appointments.push(a);
     return a;
   });
