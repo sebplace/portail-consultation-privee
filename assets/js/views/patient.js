@@ -3,6 +3,7 @@
 // calendrier (.ics), préférences de désistement, suivi de demande par référence.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
+import { t } from '../i18n.js';
 import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayShort, toast, modal, confirmDialog, downloadText, icsForAppointment } from './dom.js';
 
 let currentPatientId = null;
@@ -19,7 +20,7 @@ function proposedSlots(patient) {
 function loginView(mount) {
   clear(mount);
   const codes = store.patients().map((p) => `${p.displayName} — code ${p.code}`).join(' · ');
-  const input = el('input', { class: 'field', placeholder: 'Ex. ANNE-2026', 'aria-label': "Code d'accès" });
+  const input = el('input', { class: 'field', placeholder: 'Ex. ANNE-2026', 'aria-label': t('p.code') });
   const connect = () => {
     const p = store.patientByCode(input.value);
     if (!p) { toast('Code inconnu.', 'err'); return; }
@@ -27,25 +28,45 @@ function loginView(mount) {
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
   mount.appendChild(el('div', { class: 'card narrow' },
-    el('h2', {}, 'Espace patient'),
-    el('p', { class: 'muted' }, 'Cabinet du Dr Mathieu Place — psychiatre.'),
-    el('p', { class: 'muted' }, "Accès par lien sécurisé personnel (démonstration : code d'accès)."),
+    el('h2', {}, t('p.space')),
+    el('p', { class: 'muted' }, t('p.cabinet')),
+    el('p', { class: 'muted' }, t('p.access')),
     input,
-    el('button', { class: 'btn btn-primary', onclick: connect }, 'Se connecter'),
+    el('button', { class: 'btn btn-primary', onclick: connect }, t('p.login')),
     el('div', { class: 'sep' }),
-    el('p', { class: 'muted small' }, "Vous n'êtes pas encore suivi(e) ?"),
+    el('p', { class: 'muted small' }, t('p.notyet')),
     el('div', { class: 'row-actions wrap' },
-      el('button', { class: 'btn btn-ghost', onclick: () => newDemandView(mount) }, 'Adresser une nouvelle demande'),
-      el('button', { class: 'btn btn-ghost', onclick: () => trackDemandView(mount) }, 'Suivre ma demande'),
+      el('button', { class: 'btn btn-ghost', onclick: () => newDemandView(mount) }, t('p.newdemand')),
+      el('button', { class: 'btn btn-ghost', onclick: () => trackDemandView(mount) }, t('p.track')),
+      el('button', { class: 'btn btn-ghost', onclick: () => faqView(mount) }, t('p.faq')),
     ),
-    el('p', { class: 'hint' }, 'Codes de démo : ' + codes),
+    el('p', { class: 'hint' }, t('p.democodes') + codes),
   ));
+}
+
+// FAQ / page d'accueil expliquant le fonctionnement.
+function faqView(mount) {
+  clear(mount);
+  const items = [
+    ['Comment prendre un rendez-vous ?', "Connectez-vous avec votre code, cliquez sur « Choisir un rendez-vous » et sélectionnez un créneau proposé. Seuls les créneaux adaptés à votre suivi vous sont montrés."],
+    ['Puis-je déplacer ou annuler ?', "Oui, depuis « Mes rendez-vous », tant que le rendez-vous est à venir. Un déplacement reste dans une fourchette cohérente."],
+    ["Qu'est-ce que la liste de désistement ?", "Si vous avez déjà un rendez-vous à venir, vous pouvez demander à être prévenu(e) si une place plus tôt se libère, selon vos préférences (jours, horaires, délai)."],
+    ['Comment adresser une nouvelle demande ?', "Utilisez « Adresser une nouvelle demande ». Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai. Le médecin examine chaque demande."],
+    ['Le médecin voit-il mes messages par e-mail ?', "Non. Les e-mails sont neutres et ne contiennent aucun contenu. Votre message reste dans l'espace sécurisé du médecin."],
+    ["En cas d'urgence ?", "Ce dispositif ne remplace jamais les services d'urgence. En cas d'urgence, appelez le 112."],
+  ];
+  mount.appendChild(el('div', { class: 'space-head' },
+    el('div', {}, el('h2', {}, t('p.faq')), el('p', { class: 'muted' }, 'Cabinet du Dr Mathieu Place')),
+    el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, t('p.back'))));
+  mount.appendChild(el('div', { class: 'card' }, items.map(([q, a]) => el('div', { class: 'faq-item' },
+    el('div', { class: 'faq-q' }, q), el('div', { class: 'muted small' }, a)))));
+  mount.appendChild(el('div', { class: 'notice' }, t('p.emergency')));
 }
 
 function header(mount, patient) {
   mount.appendChild(el('div', { class: 'space-head' },
-    el('div', {}, el('h2', {}, 'Bonjour'), el('p', { class: 'muted' }, patient.displayName)),
-    el('button', { class: 'btn btn-ghost', onclick: () => { currentPatientId = null; render(mount); } }, 'Se déconnecter'),
+    el('div', {}, el('h2', {}, t('p.hello')), el('p', { class: 'muted' }, patient.displayName)),
+    el('button', { class: 'btn btn-ghost', onclick: () => { currentPatientId = null; render(mount); } }, t('p.logout')),
   ));
 }
 
@@ -80,13 +101,13 @@ function slotGrid(list, onPick, highlightFirst) {
 
 function bookRecap(mount, patient, slot, onConfirm) {
   const body = [
-    el('p', {}, 'Vous êtes sur le point de réserver :'),
-    el('div', { class: 'note-box' }, `${fmtDateTime(slot)} · ${patient.cadence ? store.doctor().slotDurationMin : 45} min`),
-    el('p', { class: 'muted small' }, 'Un e-mail neutre pourra vous rappeler ce rendez-vous.'),
+    el('p', {}, t('p.about2book')),
+    el('div', { class: 'note-box' }, `${fmtDateTime(slot)} · ${store.doctor().slotDurationMin} min`),
+    el('p', { class: 'muted small' }, t('p.reminder')),
   ];
-  const confirm = el('button', { class: 'btn btn-primary', onclick: () => { m.close(); onConfirm(); } }, 'Confirmer le rendez-vous');
-  const cancel = el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Retour');
-  const m = modal('Confirmer le rendez-vous', body, [cancel, confirm]);
+  const confirm = el('button', { class: 'btn btn-primary', onclick: () => { m.close(); onConfirm(); } }, t('p.confirm'));
+  const cancel = el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, t('p.back'));
+  const m = modal(t('p.confirm'), body, [cancel, confirm]);
 }
 
 function bookView(mount, patient) {
@@ -94,9 +115,9 @@ function bookView(mount, patient) {
   const all = proposedSlots(patient);
   const wk = weekSlots(all, weekOffset);
   const nav = el('div', { class: 'weeknav' },
-    el('button', { class: 'btn btn-ghost', disabled: wk.hasPrev ? null : '', onclick: () => { weekOffset = Math.max(0, weekOffset - 1); bookView(mount, patient); } }, '← Semaine préc.'),
+    el('button', { class: 'btn btn-ghost', disabled: wk.hasPrev ? null : '', onclick: () => { weekOffset = Math.max(0, weekOffset - 1); bookView(mount, patient); } }, t('p.weekprev')),
     el('strong', {}, wk.label || 'Aucun créneau'),
-    el('button', { class: 'btn btn-ghost', disabled: wk.hasNext ? null : '', onclick: () => { weekOffset += 1; bookView(mount, patient); } }, 'Semaine suiv. →'),
+    el('button', { class: 'btn btn-ghost', disabled: wk.hasNext ? null : '', onclick: () => { weekOffset += 1; bookView(mount, patient); } }, t('p.weeknext')),
   );
   const pickHandler = (s) => bookRecap(mount, patient, s, () => {
     const res = store.bookAppointment(patient.id, s.toISOString(), { actor: 'patient' });
@@ -111,16 +132,16 @@ function bookView(mount, patient) {
     content = el('div', { class: 'empty' },
       'Aucun créneau cette semaine.',
       wk.firstNext ? el('div', { class: 'row-actions', style: 'justify-content:center;margin-top:10px' },
-        el('button', { class: 'btn btn-primary', onclick: () => { const t = new Date(wk.firstNext); const nowMon = new Date(); nowMon.setHours(0,0,0,0); const wd = nowMon.getDay()===0?7:nowMon.getDay(); nowMon.setDate(nowMon.getDate()-(wd-1)); weekOffset = Math.round((t - nowMon) / (7*24*3600*1000)); bookView(mount, patient); } }, `Prochain créneau : ${fmtDate(wk.firstNext)}`)) : null);
+        el('button', { class: 'btn btn-primary', onclick: () => { const tgt = new Date(wk.firstNext); const nowMon = new Date(); nowMon.setHours(0,0,0,0); const wd = nowMon.getDay()===0?7:nowMon.getDay(); nowMon.setDate(nowMon.getDate()-(wd-1)); weekOffset = Math.round((tgt - nowMon) / (7*24*3600*1000)); bookView(mount, patient); } }, `Prochain créneau : ${fmtDate(wk.firstNext)}`)) : null);
   } else {
     content = slotGrid(wk.list, pickHandler, wk.list[0]);
   }
 
   mount.appendChild(el('div', { class: 'card' },
-    el('h3', {}, 'Choisir un rendez-vous'),
-    el('p', { class: 'muted' }, 'Voici les créneaux qui vous sont proposés.'),
+    el('h3', {}, t('p.chooserdv')),
+    el('p', { class: 'muted' }, t('p.proposed')),
     nav, content,
-    el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour')),
+    el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, t('p.back'))),
   ));
 }
 
@@ -217,8 +238,8 @@ function appointmentRow(mount, a, patient) {
       el('button', { class: 'btn btn-ghost', title: 'Ajouter à mon calendrier', onclick: () => {
         downloadText('rendez-vous.ics', icsForAppointment({ title: 'Consultation — Dr Mathieu Place', start: a.datetime, durationMin: a.durationMin, description: 'Rendez-vous (prototype démo).' }), 'text/calendar;charset=utf-8');
         toast('Fichier calendrier téléchargé (.ics).');
-      } }, '📅 Calendrier'),
-      canChange ? el('button', { class: 'btn btn-ghost', onclick: () => { weekOffset = 0; moveView(mount, a, patient); } }, 'Déplacer') : null,
+      } }, t('p.calendar')),
+      canChange ? el('button', { class: 'btn btn-ghost', onclick: () => { weekOffset = 0; moveView(mount, a, patient); } }, t('p.move')) : null,
       canChange ? el('button', { class: 'btn btn-ghost danger', onclick: async () => {
         if (!await confirmDialog(`Annuler le rendez-vous du ${fmtDateTime(a.datetime)} ?`, { danger: true, okLabel: 'Annuler le rendez-vous', cancelLabel: 'Conserver' })) return;
         store.cancelAppointment(a.id, { actor: 'patient' }); toast('Rendez-vous annulé.'); render(mount);
@@ -354,31 +375,56 @@ function render(mount) {
   const onWaitlist = store.waitlist().some((w) => w.patientId === patient.id);
   const canWaitlist = rules.canJoinWaitlist(store.appointments(), patient.id, new Date());
 
+  // Bannière : rendez-vous tombant dans une fermeture -> reprogrammation guidée.
+  const inClosure = store.appointmentsInClosures(patient.id);
+  if (inClosure.length) {
+    mount.appendChild(el('div', { class: 'card' },
+      el('div', { class: 'notice' }, t('p.closurewarn')),
+      el('div', { class: 'list' }, inClosure.map((a) => el('div', { class: 'row-item' },
+        el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime))),
+        el('button', { class: 'btn btn-primary', onclick: () => { weekOffset = 0; moveView(mount, a, patient); } }, t('p.reschedule')),
+      ))),
+    ));
+  }
+
   mount.appendChild(el('div', { class: 'card' },
     el('div', { class: 'card-head' },
-      el('h3', {}, 'Mes rendez-vous'),
-      el('button', { class: 'btn btn-primary', onclick: () => { weekOffset = 0; bookView(mount, patient); } }, '+ Choisir un rendez-vous'),
+      el('h3', {}, t('p.myrdv')),
+      el('button', { class: 'btn btn-primary', onclick: () => { weekOffset = 0; bookView(mount, patient); } }, t('p.choose')),
     ),
     upcoming.length ? el('div', { class: 'list' }, upcoming.map((a) => appointmentRow(mount, a, patient)))
-      : el('div', { class: 'empty' }, 'Aucun rendez-vous à venir.'),
+      : el('div', { class: 'empty' }, t('p.none')),
   ));
 
   mount.appendChild(el('div', { class: 'card' },
-    el('div', { class: 'card-head' }, el('h3', {}, 'Autres actions')),
+    el('div', { class: 'card-head' }, el('h3', {}, t('p.otheractions')),
+      el('button', { class: 'btn btn-ghost', onclick: () => faqView(mount) }, t('p.faq'))),
     el('div', { class: 'action-grid' },
       el('button', { class: 'btn btn-tile', onclick: () => requestView(mount, patient) },
-        el('strong', {}, 'Signaler une demande'), el('span', { class: 'muted small' }, 'Parler, ordonnance, rapport…')),
+        el('strong', {}, t('p.signal')), el('span', { class: 'muted small' }, t('p.signalsub'))),
       el('button', { class: 'btn btn-tile', disabled: (canWaitlist || onWaitlist) ? null : '',
-        title: (canWaitlist || onWaitlist) ? null : "Accessible uniquement si vous avez un rendez-vous à venir à avancer.",
+        title: (canWaitlist || onWaitlist) ? null : t('p.waitlistneed'),
         onclick: () => { if (!canWaitlist && !onWaitlist) { toast("La liste de désistement n'est accessible que si vous avez déjà un rendez-vous à venir.", 'err'); return; } waitlistPrefsView(mount, patient); } },
-        el('strong', {}, onWaitlist ? 'Mes préférences de désistement' : 'Liste de désistement'),
-        el('span', { class: 'muted small' }, onWaitlist ? 'Modifier jours, horaires, délai' : (canWaitlist ? 'Avancer votre prochain rendez-vous' : 'Nécessite un rendez-vous à venir'))),
+        el('strong', {}, onWaitlist ? t('p.waitlistprefs') : t('p.waitlist')),
+        el('span', { class: 'muted small' }, onWaitlist ? 'Modifier jours, horaires, délai' : (canWaitlist ? t('p.waitlistsub') : t('p.waitlistneed')))),
     ),
-    onWaitlist ? el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { store.leaveWaitlist(patient.id); toast('Retiré de la liste de désistement.'); render(mount); } }, 'Quitter le désistement')) : null,
+    onWaitlist ? el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { store.leaveWaitlist(patient.id); toast('Retiré de la liste de désistement.'); render(mount); } }, t('p.leavewaitlist'))) : null,
   ));
 
-  mount.appendChild(el('div', { class: 'notice' },
-    "Ce canal ne remplace pas les dispositifs d'urgence. En cas d'urgence, contactez le 112 ou les services d'urgence."));
+  // Historique des rendez-vous passés (lecture seule).
+  const past = store.pastAppointmentsOf(patient.id).slice(0, 10);
+  if (past.length) {
+    mount.appendChild(el('div', { class: 'card' },
+      el('h3', {}, t('p.history')),
+      el('div', { class: 'list' }, past.map((a) => el('div', { class: 'row-item' },
+        el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime)),
+          el('div', { class: 'muted small' }, store.STATUS_LABEL[a.status] || a.status)),
+      ))),
+    ));
+  }
+
+  mount.appendChild(el('div', { class: 'notice' }, t('p.emergency')));
 }
 
 export function mountPatient(node) { render(node); }
+

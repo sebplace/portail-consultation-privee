@@ -6,6 +6,7 @@ import * as avail from '../core/availability.js';
 import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayLabel, weekdayShort, toast, modal, confirmDialog, downloadText } from './dom.js';
 
 let tab = 'accueil';
+window.addEventListener('goto-decisions', () => { tab = 'accueil'; });
 
 function labelFor(a) {
   const p = store.patientById(a.patientId);
@@ -18,9 +19,9 @@ function statusTag(status) { return el('span', { class: 'st st-' + status }, sto
 
 function tabs(mount) {
   const items = [
-    ['accueil', 'Accueil'], ['agenda', 'Agenda'], ['intervention', 'À traiter'], ['files', 'Files'],
-    ['regles', 'Règles'], ['dispo', 'Disponibilité'], ['migration', 'Migration'],
-    ['journal', 'Journal'], ['emails', 'E-mails'], ['reglages', 'Réglages'],
+    ['accueil', 'Accueil'], ['aujourdhui', "Aujourd'hui"], ['calendrier', 'Calendrier'], ['agenda', 'Agenda'],
+    ['intervention', 'À traiter'], ['files', 'Files'], ['regles', 'Règles'], ['dispo', 'Disponibilité'],
+    ['migration', 'Migration'], ['journal', 'Journal'], ['emails', 'E-mails'], ['reglages', 'Réglages'],
   ];
   const openReq = store.openRequests().length;
   const newDem = store.demands().filter((d) => d.status === 'deposee').length;
@@ -33,7 +34,72 @@ function tabs(mount) {
   }));
 }
 
-// --- ACCUEIL : synthèse + recherche + jauges + rappels simulés ---
+// Centre de décisions en attente.
+function decisionsCard(mount) {
+  const items = store.pendingDecisions();
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' }, el('h3', {}, 'Décisions en attente'), el('span', { class: 'pill' + (items.length ? ' warn' : '') }, String(items.length))),
+    items.length ? el('div', { class: 'decisions-list' }, items.map((it) => el('div', { class: 'decision' },
+      el('span', { class: 'dot' }), el('span', {}, it.label),
+      el('button', { class: 'btn btn-ghost', style: 'margin-left:auto', onclick: () => {
+        tab = (it.type === 'demande-explicite') ? 'intervention' : (it.type === 'fermeture-impact' ? 'dispo' : 'files'); render(mount);
+      } }, 'Ouvrir'),
+    ))) : el('div', { class: 'empty' }, 'Rien à décider. Tout est à jour.'),
+  );
+}
+
+// --- AUJOURD'HUI ---
+function aujourdhuiTab(mount) {
+  const now = new Date();
+  const today = store.appointments().filter((a) => a.status === 'planifie' && fmtDate(a.datetime) === fmtDate(now))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const next = store.appointments().filter((a) => a.status === 'planifie' && new Date(a.datetime) > now).sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
+  return el('div', {},
+    el('div', { class: 'card' },
+      el('div', { class: 'card-head' }, el('h3', {}, `Aujourd'hui — ${fmtDate(now)}`), el('button', { class: 'btn btn-ghost', onclick: () => window.print() }, '🖨️ Imprimer')),
+      next ? el('div', { class: 'notice info' }, `Prochain : ${fmtTime(next.datetime)} — ${labelFor(next)}`) : null,
+      today.length ? el('div', { class: 'list' }, today.map((a) => el('div', { class: 'row-item' },
+        el('div', {}, el('div', { class: 'row-title' }, `${fmtTime(a.datetime)} — ${labelFor(a)}`),
+          el('div', { class: 'muted small' }, `${a.durationMin} min${a.circuitInstanceId ? ' · parcours' : ''}${a.emergency ? ' · urgence' : ''}`)),
+        el('div', { class: 'row-actions wrap' },
+          el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'effectue', { actor: 'medecin' }); toast('Effectué.'); render(mount); } }, 'Effectué'),
+          el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'absent', { actor: 'medecin' }); toast('Absent.'); render(mount); } }, 'Absent'),
+        ),
+      ))) : el('div', { class: 'empty' }, 'Aucun rendez-vous aujourd\'hui.'),
+    ),
+  );
+}
+
+// --- CALENDRIER (semaine) ---
+let calWeek = 0;
+function calendrierTab(mount) {
+  const now = new Date();
+  const monday = new Date(now); monday.setHours(0, 0, 0, 0);
+  const wd = monday.getDay() === 0 ? 7 : monday.getDay();
+  monday.setDate(monday.getDate() - (wd - 1) + calWeek * 7);
+  const days = store.consultationWeekdays(); // mardi, jeudi
+  const cols = days.map((d) => {
+    const day = new Date(monday); day.setDate(monday.getDate() + (d - 1));
+    const dayStr = fmtDate(day);
+    // Créneaux planifiés ce jour + ouverts.
+    const appts = store.appointments().filter((a) => a.status === 'planifie' && fmtDate(a.datetime) === dayStr).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const evs = appts.map((a) => el('div', { class: 'cal-ev ' + (a.emergency ? 'urgence' : (a.circuitInstanceId ? 'avis' : 'ordinaire')) }, `${fmtTime(a.datetime)} ${labelFor(a)}`));
+    return el('div', { class: 'cal-col' }, el('h4', {}, `${weekdayLabel(d)} ${String(day.getDate()).padStart(2, '0')}/${String(day.getMonth() + 1).padStart(2, '0')}`), ...(evs.length ? evs : [el('div', { class: 'muted small' }, '—')]));
+  });
+  return el('div', {},
+    el('div', { class: 'card' },
+      el('div', { class: 'weeknav' },
+        el('button', { class: 'btn btn-ghost', onclick: () => { calWeek -= 1; render(mount); } }, '← Semaine préc.'),
+        el('strong', {}, `Semaine du ${fmtDate(monday)}`),
+        el('button', { class: 'btn btn-ghost', onclick: () => { calWeek += 1; render(mount); } }, 'Semaine suiv. →'),
+      ),
+      el('div', { class: 'cal', style: `--cols:${days.length}` }, ...cols),
+      el('div', { class: 'muted small', style: 'margin-top:8px' }, 'Bleu : suivi ordinaire · orange : avis/parcours · rouge : urgence.'),
+    ),
+  );
+}
+
+// --- ACCUEIL : synthèse + décisions + recherche + jauges ---
 function accueilTab(mount) {
   const s = store.stats();
   const summary = el('div', { class: 'summary-grid' },
@@ -64,7 +130,7 @@ function accueilTab(mount) {
     ),
   );
 
-  return el('div', {}, searchCard(mount), summary, occ, misc);
+  return el('div', {}, decisionsCard(mount), searchCard(mount), summary, occ, misc);
 }
 function tile(num, label, onclick) {
   return el('button', { class: 'summary-tile', onclick }, el('div', { class: 'summary-num' }, String(num)), el('div', { class: 'summary-lbl' }, label));
@@ -481,9 +547,7 @@ function dispoTab(mount) {
       closure = { from: `${slotDate.value}T${slotTime.value}:00`, to: `${slotDate.value}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00`, label: label.value || 'créneau fermé' };
     }
     const impacted = avail.appointmentsInClosure(store.appointments(), closure);
-    d.closures.push(closure);
-    store.logOp('medecin', 'fermeture ajoutée', `${closure.from} -> ${closure.to} (${closure.label})`);
-    store.save();
+    store.addClosure(closure);
     toast(impacted.length ? `Fermeture ajoutée. ${impacted.length} rdv à traiter (non déplacés).` : 'Fermeture ajoutée.', impacted.length ? 'err' : 'ok');
     render(mount);
   };
@@ -491,35 +555,68 @@ function dispoTab(mount) {
   const trame = el('div', { class: 'card' },
     el('h3', {}, 'Trame hebdomadaire'),
     el('p', { class: 'muted small' }, `Durée des consultations : ${d.slotDurationMin} min · Intervalle entre les créneaux (min) : ${d.slotDurationMin} · Horizon : ${d.horizonWeeks} semaines`),
-    el('div', { class: 'list' }, wdList.map((wd) => el('div', { class: 'row-item' },
-      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd) + ' — suivis ordinaires'), el('div', { class: 'muted small' }, d.weeklyTemplate[wd].join(' · '))),
+    el('div', { class: 'list' }, wdList.map((wd) => el('div', { class: 'row-item stack' },
+      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd) + ' — suivis ordinaires'),
+        el('div', { class: 'row-actions wrap', style: 'margin-top:6px' }, d.weeklyTemplate[wd].map((t) => el('span', { class: 'pill' }, t, ' ', el('button', { class: 'pill-x', title: 'Retirer', onclick: () => { store.removeSlot(wd, t, 'ordinaire'); toast('Créneau retiré.'); render(mount); } }, '×'))))),
     ))),
-    el('div', { class: 'notice info small' }, `Créneaux d'avis dédiés (réservés aux circuits, exclus des suivis ordinaires) : ${Object.entries(d.avisTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}. Base 8 séances / 4 semaines.`),
-    el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}.`),
+    el('div', { class: 'notice info small' }, `Créneaux d'avis dédiés (réservés aux circuits, exclus des suivis ordinaires) : ${Object.entries(d.avisTemplate).map(([wd, tt]) => weekdayLabel(Number(wd)) + ' ' + tt.join(',')).join(' ; ')}. Base ${d.avisCapacity.base} séances / 4 semaines.`),
+    el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, tt]) => weekdayLabel(Number(wd)) + ' ' + tt.join(',')).join(' ; ')}.`),
     el('div', { class: 'row-actions wrap end' },
+      el('button', { class: 'btn btn-ghost', onclick: () => slotEditorModal(mount) }, 'Ajouter un créneau à la trame'),
+      el('button', { class: 'btn btn-ghost', onclick: () => capacityModal(mount) }, 'Régler la capacité avis'),
       el('button', { class: 'btn btn-ghost', onclick: () => authorizeEmergencyPrompt(mount) }, 'Autoriser une urgence 12:15'),
-      el('button', { class: 'btn btn-ghost', onclick: () => addExtraAvisModal(mount) }, 'Ajouter un créneau d\'avis ponctuel'),
-      el('button', { class: 'btn btn-ghost', onclick: () => convertAvisModal(mount) }, 'Convertir un créneau d\'avis en ordinaire'),
+      el('button', { class: 'btn btn-ghost', onclick: () => addExtraAvisModal(mount) }, "Créneau d'avis ponctuel"),
+      el('button', { class: 'btn btn-ghost', onclick: () => convertAvisModal(mount) }, "Convertir un avis en ordinaire"),
     ),
     avisCapacityCard(),
   );
 
   const closures = el('div', { class: 'card' },
     el('h3', {}, 'Congés / fermetures / exceptions datées'),
+    el('div', { class: 'row-actions' }, el('button', { class: 'btn btn-ghost', onclick: () => { const n = store.prefillHolidays(); toast(n ? `${n} jour(s) férié(s) belge(s) ajouté(s).` : 'Jours fériés déjà présents.'); render(mount); } }, 'Pré-remplir les jours fériés belges')),
     el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Type'), kind),
     dynamic, label,
     el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-primary', onclick: addClosure }, 'Ajouter la fermeture')),
     d.closures.length ? el('div', { class: 'list' }, d.closures.map((c, i) => {
       const impacted = avail.appointmentsInClosure(store.appointments(), c);
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(c.from) && /^\d{4}-\d{2}-\d{2}$/.test(c.to);
+      const span = dateOnly ? (c.from === c.to ? fmtDate(c.from) : `${fmtDate(c.from)} → ${fmtDate(c.to)}`) : `${fmtDateTime(c.from)} → ${fmtDateTime(c.to)}`;
       return el('div', { class: 'row-item stack' },
-        el('div', {}, el('div', { class: 'row-title' }, `${fmtDateTime(c.from)} → ${fmtDateTime(c.to)} · ${c.label}`),
+        el('div', {}, el('div', { class: 'row-title' }, `${span} · ${c.label}`),
           impacted.length ? el('div', { class: 'notice info small' }, `${impacted.length} rendez-vous à traiter (bloque toute nouvelle réservation, sans déplacer personne) :`,
             el('ul', { class: 'mini-list' }, impacted.map((a) => el('li', {}, `${fmtDateTime(a.datetime)} — ${labelFor(a)}`)))) : el('div', { class: 'muted small' }, 'Aucun rendez-vous impacté.')),
-        el('div', { class: 'row-actions' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { d.closures.splice(i, 1); store.logOp('medecin', 'fermeture retirée', `${c.from}`); store.save(); render(mount); } }, 'Retirer')),
+        el('div', { class: 'row-actions' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { store.removeClosure(i); render(mount); } }, 'Retirer')),
       );
     })) : el('div', { class: 'empty' }, 'Aucune fermeture enregistrée.'),
   );
   return el('div', {}, trame, closures);
+}
+
+// Éditeur : ajouter un créneau (ordinaire ou avis) à la trame.
+function slotEditorModal(mount) {
+  const wdSel = el('select', { class: 'field mini' }, [1, 2, 3, 4, 5, 6, 7].map((wd) => el('option', { value: String(wd), selected: wd === 2 ? '' : null }, weekdayLabel(wd))));
+  const timeInput = el('input', { class: 'field mini', type: 'time', value: '13:00' });
+  const kindSel = el('select', { class: 'field mini' }, el('option', { value: 'ordinaire' }, 'Suivi ordinaire'), el('option', { value: 'avis' }, "Avis (circuits)"));
+  const m = modal('Ajouter un créneau à la trame', [
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Jour'), wdSel, el('label', { class: 'lbl' }, 'Heure'), timeInput, el('label', { class: 'lbl' }, 'Type'), kindSel),
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { const r = store.addSlot(Number(wdSel.value), timeInput.value, kindSel.value); if (r.error) toast(r.error === 'exists' ? 'Créneau déjà présent.' : 'Format invalide.', 'err'); else { m.close(); toast('Créneau ajouté.'); render(mount); } } }, 'Ajouter'),
+  ]);
+}
+
+// Éditeur : régler la capacité avis (base / plafond).
+function capacityModal(mount) {
+  const cap = store.doctor().avisCapacity;
+  const base = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.base) });
+  const max = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.max) });
+  const m = modal('Régler la capacité avis (4 semaines)', [
+    el('p', { class: 'muted small' }, 'Base : nombre de séances d\'avis visées. Plafond : maximum absolu (extensions ponctuelles comprises).'),
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Base'), base, el('label', { class: 'lbl' }, 'Plafond'), max),
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { store.setAvisCapacity({ base: base.value, max: max.value }); m.close(); toast('Capacité mise à jour.'); render(mount); } }, 'Enregistrer'),
+  ]);
 }
 
 function authorizeEmergencyPrompt(mount) {
@@ -619,16 +716,38 @@ function migrationLog() {
 }
 
 // --- JOURNAL ---
-function journalTab() {
-  const entries = store.logEntries();
+let journalFilter = { q: '', actor: '', page: 0 };
+function journalTab(mount) {
+  const all = store.logEntries();
+  const actors = [...new Set(all.map((e) => e.actor))];
+  const q = journalFilter.q.toLowerCase();
+  const filtered = all.filter((e) =>
+    (!journalFilter.actor || e.actor === journalFilter.actor) &&
+    (!q || (e.action + ' ' + (e.detail || '')).toLowerCase().includes(q)));
+  const pageSize = 20;
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  journalFilter.page = Math.min(journalFilter.page, pages - 1);
+  const slice = filtered.slice(journalFilter.page * pageSize, journalFilter.page * pageSize + pageSize);
+
+  const search = el('input', { class: 'field', placeholder: 'Rechercher (action, détail)', value: journalFilter.q });
+  search.addEventListener('input', () => { journalFilter.q = search.value; journalFilter.page = 0; render(mount); const n = mount.querySelector('.field'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } });
+  const actorSel = el('select', { class: 'field mini' }, el('option', { value: '' }, 'Tous les acteurs'), actors.map((a) => el('option', { value: a, selected: journalFilter.actor === a ? '' : null }, a)));
+  actorSel.addEventListener('change', () => { journalFilter.actor = actorSel.value; journalFilter.page = 0; render(mount); });
+
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' }, el('h3', {}, 'Journal des opérations'),
       el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); } }, 'Exporter CSV')),
-    entries.length ? el('div', { class: 'journal-list' }, entries.map((e) => el('div', { class: 'journal-item' },
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Recherche'), search, el('label', { class: 'lbl' }, 'Acteur'), actorSel),
+    slice.length ? el('div', { class: 'journal-list' }, slice.map((e) => el('div', { class: 'journal-item' },
       el('div', { class: 'journal-top' }, el('span', { class: 'pill' }, e.actor), el('span', { class: 'muted small' }, fmtDateTime(e.ts))),
       el('div', { class: 'journal-action' }, e.action),
       e.detail ? el('div', { class: 'muted small' }, e.detail) : null,
-    ))) : el('div', { class: 'empty' }, 'Journal vide.'),
+    ))) : el('div', { class: 'empty' }, 'Aucune entrée.'),
+    el('div', { class: 'weeknav' },
+      el('button', { class: 'btn btn-ghost', disabled: journalFilter.page > 0 ? null : '', onclick: () => { journalFilter.page -= 1; render(mount); } }, '← Précédent'),
+      el('span', { class: 'muted small' }, `Page ${journalFilter.page + 1} / ${pages} · ${filtered.length} entrée(s)`),
+      el('button', { class: 'btn btn-ghost', disabled: journalFilter.page < pages - 1 ? null : '', onclick: () => { journalFilter.page += 1; render(mount); } }, 'Suivant →'),
+    ),
   );
 }
 
@@ -693,27 +812,50 @@ function reglagesTab(mount) {
   );
 }
 function statsGrid() {
-  const s = store.stats();
+  const s = store.statsDetailed();
   const item = (n, l) => el('div', { class: 'stat' }, el('div', { class: 'stat-num' }, String(n)), el('div', { class: 'muted small' }, l));
-  return el('div', { class: 'stat-grid' },
-    item(s.byStatus.effectue || 0, 'Effectués'),
-    item(s.byStatus.absent || 0, 'Absences'),
-    item(s.absenceRate + '%', 'Taux d\'absence'),
-    item(s.occupancy + '%', 'Occupation 4 sem.'),
-    item(s.upcoming, 'RDV à venir'),
-    item(s.waitlist, 'Désistements'),
+  const absList = Object.entries(s.absByWeekday).map(([k, v]) => `${k} : ${v}`).join(' · ') || 'aucune';
+  const delayList = Object.entries(s.avgDelayByCircuit).map(([k, v]) => `${store.circuitById(k)?.label || k} : ${v} j`).join(' · ') || 'n/a';
+  return el('div', {},
+    el('div', { class: 'stat-grid' },
+      item(s.byStatus.effectue || 0, 'Effectués'),
+      item(s.byStatus.absent || 0, 'Absences'),
+      item(s.absenceRate + '%', 'Taux d\'absence'),
+      item(s.occupancy + '%', 'Occupation 4 sem.'),
+      item(s.conversion + '%', 'Conversion demande→parcours'),
+      item(s.waitlist, 'Désistements'),
+    ),
+    el('div', { class: 'muted small', style: 'margin-top:10px' }, `Absences par jour : ${absList}`),
+    el('div', { class: 'muted small' }, `Délai moyen d'accès par circuit : ${delayList}`),
   );
+}
+
+// Visite guidée (aide) par rôle.
+function guidedTour() {
+  const steps = [
+    ['Accueil', 'Vue d\'ensemble : décisions en attente, recherche patient, jauges d\'occupation et de capacité avis.'],
+    ["Aujourd'hui", 'La journée en cours, pointage effectué/absent en un clic, impression.'],
+    ['Calendrier', 'Vue semaine colorée : ordinaire (bleu), avis (orange), urgence (rouge).'],
+    ['Files', 'Désistement (48h) et demandes d\'avis : accepter, démarrer les initiales, bloc thérapeutique, relais, prolonger/raccourcir.'],
+    ['Disponibilité', 'Trame, créneaux d\'avis, fermetures (jour/demi/créneau), jours fériés, capacité.'],
+    ['Undo', 'Le bouton ↶ en haut annule la dernière action.'],
+  ];
+  modal('Visite guidée — Médecin', steps.map(([t2, d]) => el('div', { class: 'faq-item' }, el('div', { class: 'faq-q' }, t2), el('div', { class: 'muted small' }, d))),
+    [el('button', { class: 'btn btn-primary', onclick: () => document.querySelector('.modal-back')?.remove() }, 'Compris')]);
 }
 
 function render(mount) {
   clear(mount);
   mount.appendChild(el('div', { class: 'space-head' },
     el('div', {}, el('h2', {}, 'Tableau de bord — Dr Mathieu Place'), el('p', { class: 'muted' }, 'Démonstration — données fictives locales')),
-    el('button', { class: 'btn btn-ghost danger', onclick: async () => { if (await confirmDialog('Réinitialiser toutes les données de démonstration ?', { danger: true })) { store.reset(); tab = 'accueil'; migrationRows = null; render(mount); toast('Données réinitialisées.'); } } }, 'Réinitialiser la démo'),
+    el('div', { class: 'row-actions wrap' },
+      el('button', { class: 'btn btn-ghost', onclick: guidedTour }, 'Visite guidée'),
+      el('button', { class: 'btn btn-ghost danger', onclick: async () => { if (await confirmDialog('Réinitialiser toutes les données de démonstration ?', { danger: true })) { store.reset(); tab = 'accueil'; migrationRows = null; render(mount); toast('Données réinitialisées.'); } } }, 'Réinitialiser la démo'),
+    ),
   ));
   mount.appendChild(tabs(mount));
   const body = el('div', {});
-  const map = { accueil: accueilTab, agenda: agendaTab, intervention: interventionTab, files: filesTab, regles: reglesTab, dispo: dispoTab, migration: migrationTab, journal: journalTab, emails: emailsTab, reglages: reglagesTab };
+  const map = { accueil: accueilTab, aujourdhui: aujourdhuiTab, calendrier: calendrierTab, agenda: agendaTab, intervention: interventionTab, files: filesTab, regles: reglesTab, dispo: dispoTab, migration: migrationTab, journal: journalTab, emails: emailsTab, reglages: reglagesTab };
   const fn = map[tab] || accueilTab;
   body.appendChild(fn(mount));
   mount.appendChild(body);

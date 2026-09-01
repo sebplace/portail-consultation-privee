@@ -42,9 +42,18 @@ Ancrage = dernier rdv **effectué** ou date fixée par le médecin (jamais annul
 Aucune dépendance, aucun build. JavaScript standard (ES modules).
 
 ```bash
-node tests/rules.test.mjs   # tests du moteur (23 tests)
-node tests/serve.mjs        # http://localhost:5173
+node tests/rules.test.mjs    # tests du moteur (23 tests)
+node tests/store.test.mjs    # 7 tests d'acceptation (store)
+node tests/serve.mjs         # http://localhost:5173
 ```
+
+## Confort v6 (faisable client-only, déjà en place)
+
+- **Multilingue FR / NL / EN** (espace patient + coquille), sélecteur de langue mémorisé.
+- **Médecin** : onglet **Aujourd'hui** (pointage rapide), **vue Calendrier** semaine colorée, **centre de décisions** (cloche + compteur), **Annuler la dernière action (undo)**, **éditeur de trame** (ajout/retrait de créneaux ordinaires ou avis) et **réglage de capacité**, **jours fériés belges** pré-remplis, **journal filtrable/recherchable + pagination**, **statistiques enrichies** (absences par jour, délai d'accès par circuit, conversion), **visite guidée**.
+- **Secrétariat** : **agenda du jour imprimable/exportable**, annulation avec motif, encadré de périmètre (autorisé / non autorisé).
+- **Patient** : **FAQ**, **historique des rendez-vous passés**, **reprogrammation guidée** quand un rendez-vous tombe dans une fermeture.
+- **Sauvegarde/restauration** de l'état, **journal CSV**, PWA (coquille statique uniquement).
 
 ## Structure
 

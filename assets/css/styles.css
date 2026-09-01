@@ -201,6 +201,26 @@ textarea.field { resize: vertical; }
 .stat-num { font-size: 1.3rem; font-weight: 700; }
 .chip.next { outline: 2px solid var(--primary); }
 .ref-code { font-family: ui-monospace, Consolas, monospace; font-weight: 700; letter-spacing: 1px; }
+.pill-x { border: 0; background: transparent; color: var(--danger); cursor: pointer; font-weight: 700; padding: 0 2px; }
+.lang-select { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; font-size: .85rem; cursor: pointer; }
+.bell-badge { position: absolute; transform: translate(8px, -14px); background: var(--danger); color: #fff; border-radius: 999px; font-size: .68rem; padding: 0 5px; }
+.theme-btn { position: relative; }
+.faq-item { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
+.faq-q { font-weight: 600; margin-bottom: 4px; }
+/* Vue calendrier (semaine) */
+.cal { display: grid; grid-template-columns: repeat(var(--cols, 2), 1fr); gap: 10px; }
+.cal-col { border: 1px solid var(--line); border-radius: 10px; padding: 8px; min-height: 60px; }
+.cal-col h4 { margin: 0 0 6px; font-size: .82rem; text-transform: capitalize; }
+.cal-ev { border-radius: 8px; padding: 5px 8px; font-size: .78rem; margin-bottom: 5px; color: #fff; }
+.cal-ev.ordinaire { background: var(--st-planifie); } .cal-ev.avis { background: var(--warn); } .cal-ev.urgence { background: var(--st-absent); }
+.decisions-list { display: flex; flex-direction: column; gap: 6px; }
+.decision { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: .9rem; }
+.decision .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); flex: 0 0 auto; }
+@media print {
+  .topbar, .tabs, .foot, .row-actions, .theme-btn, .lang-select, .switcher { display: none !important; }
+  body { background: #fff; color: #000; }
+  .card { box-shadow: none; border: 1px solid #ccc; break-inside: avoid; }
+}
 
 @media (max-width: 620px) {
   .action-grid { grid-template-columns: 1fr; }

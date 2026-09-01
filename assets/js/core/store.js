@@ -28,6 +28,23 @@ export function subscribe(fn) { listeners.add(fn); return () => listeners.delete
 
 function uid(p) { return `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`; }
 
+// --- Undo : pile d'instantanés en mémoire (non persistée) ---
+const undoStack = [];
+let undoLabels = [];
+export function checkpoint(label) {
+  try { undoStack.push(JSON.stringify(state)); undoLabels.push(label || 'action'); } catch (e) {}
+  if (undoStack.length > 30) { undoStack.shift(); undoLabels.shift(); }
+}
+export function canUndo() { return undoStack.length > 0; }
+export function lastUndoLabel() { return undoLabels[undoLabels.length - 1] || ''; }
+export function undo() {
+  if (!undoStack.length) return { error: 'empty' };
+  const snap = undoStack.pop(); const label = undoLabels.pop();
+  try { state = JSON.parse(snap); localStorage.setItem(KEY, JSON.stringify(state)); listeners.forEach((fn) => fn(state)); }
+  catch (e) { return { error: 'restore' }; }
+  return { ok: true, label };
+}
+
 // --- Sélecteurs de base ---
 export function doctor() { return get().doctor; }
 // Jours de semaine où il y a réellement des consultations ordinaires (1=lundi..7=dimanche).
@@ -131,6 +148,7 @@ function overlapsBooked(startISO, durationMin) {
 }
 
 export function bookAppointment(patientId, datetimeISO, { actor = 'patient', circuitInstanceId = null } = {}) {
+  checkpoint('bookAppointment');
   const patient = patientById(patientId);
   const dur = doctor().slotDurationMin;
   if (patient && !circuitInstanceId) {
@@ -149,6 +167,7 @@ export function bookAppointment(patientId, datetimeISO, { actor = 'patient', cir
 
 // Déplacement : ne décale JAMAIS la série. Marque l'ancien 'deplace', crée un 'planifie'.
 export function moveAppointment(appointmentId, newDatetimeISO, { actor = 'patient' } = {}) {
+  checkpoint('moveAppointment');
   const a = get().appointments.find((x) => x.id === appointmentId);
   if (!a) return { error: 'notfound' };
   const dur = a.durationMin || doctor().slotDurationMin;
@@ -163,6 +182,7 @@ export function moveAppointment(appointmentId, newDatetimeISO, { actor = 'patien
 }
 
 export function cancelAppointment(appointmentId, { actor = 'patient', reason = '' } = {}) {
+  checkpoint('cancelAppointment');
   const a = get().appointments.find((x) => x.id === appointmentId);
   if (!a) return null;
   a.status = 'annule';
@@ -174,6 +194,7 @@ export function cancelAppointment(appointmentId, { actor = 'patient', reason = '
 
 // Le logiciel ne marque JAMAIS 'effectue' tout seul : c'est une action explicite.
 export function setStatus(appointmentId, status, { actor = 'medecin' } = {}) {
+  checkpoint('setStatus');
   if (!STATUSES.includes(status)) return null;
   const a = get().appointments.find((x) => x.id === appointmentId);
   if (!a) return null;
@@ -209,6 +230,7 @@ export function resolveRequest(id) {
 
 // --- Règles / ancrage (médecin) ---
 export function updateCadence(patientId, cadence) {
+  checkpoint('updateCadence');
   const p = patientById(patientId);
   if (!p) return null;
   p.cadence = { ...p.cadence, ...cadence };
@@ -217,6 +239,7 @@ export function updateCadence(patientId, cadence) {
   return p.cadence;
 }
 export function setAnchor(patientId, dateISOorNull) {
+  checkpoint('setAnchor');
   const p = patientById(patientId);
   if (!p) return null;
   p.anchorDate = dateISOorNull;
@@ -227,6 +250,7 @@ export function setAnchor(patientId, dateISOorNull) {
 
 // --- Exception clinique (médecin uniquement) : hors règles, y compris urgence 12:15 ---
 export function approveException(patientId, datetimeISO, { emergency = false } = {}) {
+  checkpoint('approveException');
   const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin: doctor().slotDurationMin, status: 'planifie', exception: true, emergency };
   get().appointments.push(a);
   logOp('medecin', emergency ? 'urgence 12:15 autorisée' : 'exception approuvée', `${patientId} @ ${datetimeISO}`);
@@ -412,6 +436,7 @@ export function submitDemand(payload) {
 }
 // Le médecin accepte (éventuellement conditionnellement si relais requis manquant).
 export function acceptDemand(demandId) {
+  checkpoint('acceptDemand');
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return null;
   const c = circuitById(d.circuitId);
@@ -423,6 +448,7 @@ export function acceptDemand(demandId) {
   return d;
 }
 export function refuseDemand(demandId) {
+  checkpoint('refuseDemand');
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return null;
   d.status = 'refusee';
@@ -470,6 +496,7 @@ export function avisCapacityInfo(now = new Date()) {
 }
 // Ajout d'un créneau d'avis ponctuel (max 2 dans la fenêtre de 4 semaines).
 export function addExtraAvisSlot(datetimeISO, { now = new Date() } = {}) {
+  checkpoint('addExtraAvisSlot');
   const cap = doctor().avisCapacity;
   const start = new Date(datetimeISO);
   const to = new Date(now.getTime() + cap.windowDays * 24 * 3600 * 1000);
@@ -483,6 +510,7 @@ export function addExtraAvisSlot(datetimeISO, { now = new Date() } = {}) {
 }
 // Conversion MANUELLE d'un créneau d'avis inutilisé en suivi ordinaire.
 export function convertAvisSlotToOrdinary(datetimeISO) {
+  checkpoint('convertAvisSlotToOrdinary');
   if (overlapsBooked(datetimeISO, doctor().slotDurationMin)) return { error: 'clash', message: 'Créneau déjà occupé.' };
   if (!doctor().convertedAvisSlots.includes(datetimeISO)) doctor().convertedAvisSlots.push(datetimeISO);
   logOp('medecin', 'créneau avis converti en ordinaire', datetimeISO);
@@ -494,6 +522,7 @@ export function convertAvisSlotToOrdinary(datetimeISO) {
 // Autorisé sous acceptation ferme OU conditionnelle (les consultations initiales
 // ne dépendent pas du relais). Pour le TDAH : réserve seulement les 3 initiales.
 export function startCircuitAtomic(demandId, seriesISO, { patientId } = {}) {
+  checkpoint('startCircuitAtomic');
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return { error: 'notfound' };
   if (!['acceptee', 'acceptee-conditionnelle'].includes(d.status)) return { error: 'state', message: 'La demande doit être acceptée (ferme ou conditionnelle).' };
@@ -521,6 +550,7 @@ export function startCircuitAtomic(demandId, seriesISO, { patientId } = {}) {
 // Ouverture du bloc THÉRAPEUTIQUE (ex. TDAH +3) : décision médicale DISTINCTE,
 // jamais automatique. N'ouvre pas l'adaptation médicamenteuse (voir clearMedication).
 export function openTherapeuticBlock(demandId, seriesISO) {
+  checkpoint('openTherapeuticBlock');
   const d = get().demands.find((x) => x.id === demandId);
   if (!d) return { error: 'notfound' };
   const c = circuitById(d.circuitId);
@@ -543,6 +573,7 @@ export function openTherapeuticBlock(demandId, seriesISO) {
 
 // Prolongation / clôture (décision humaine, journalisée). Pas de plafond clinique.
 export function extendCircuit(instanceId, addSeriesISO) {
+  checkpoint('extendCircuit');
   for (const isoDt of addSeriesISO) {
     if (overlapsBooked(isoDt, doctor().slotDurationMin)) return { error: 'clash', message: `Créneau ${isoDt} occupé.` };
   }
@@ -556,6 +587,7 @@ export function extendCircuit(instanceId, addSeriesISO) {
   return created;
 }
 export function closeCircuitEarly(instanceId) {
+  checkpoint('closeCircuitEarly');
   const freed = get().appointments.filter((a) => a.circuitInstanceId === instanceId && a.status === 'planifie' && new Date(a.datetime) > new Date());
   freed.forEach((a) => { a.status = 'annule'; });
   logOp('medecin', 'clôture anticipée circuit', `${instanceId} libère ${freed.length}`);
@@ -599,6 +631,7 @@ export function analyzeCsv(text) {
   return rows;
 }
 export function commitMigration(rows) {
+  checkpoint('commitMigration');
   const accepted = rows.filter((r) => r.accepted);
   let imported = 0;
   for (const r of accepted) {
@@ -648,7 +681,8 @@ export function exportState() { return JSON.stringify(get(), null, 2); }
 export function importState(json) {
   try {
     const parsed = JSON.parse(json);
-    if (!parsed || parsed.version !== 4) return { error: 'version', message: 'Fichier incompatible (version attendue : 4).' };
+    if (!parsed || parsed.version !== 5) return { error: 'version', message: 'Fichier incompatible (version attendue : 5).' };
+    checkpoint('import état');
     state = parsed; save();
     logOp('medecin', 'import état', 'restauration locale');
     return { ok: true };
@@ -662,3 +696,138 @@ export function journalCsv() {
   for (const e of get().log) rows.push([e.ts, e.actor, e.action, e.detail || '']);
   return rows.map((r) => r.map(esc).join(';')).join('\r\n');
 }
+
+// --- Fermetures (via store, pour l'undo et la cohérence) ---
+export function addClosure(closure) {
+  checkpoint('ajout fermeture');
+  doctor().closures.push(closure);
+  logOp('medecin', 'fermeture ajoutée', `${closure.from} -> ${closure.to} (${closure.label})`);
+  save();
+  return closure;
+}
+export function removeClosure(index) {
+  const c = doctor().closures[index];
+  if (!c) return null;
+  checkpoint('retrait fermeture');
+  doctor().closures.splice(index, 1);
+  logOp('medecin', 'fermeture retirée', `${c.from}`);
+  save();
+  return c;
+}
+
+// Jours fériés légaux belges (2026-2027) : pré-remplissage en fermetures « journée ».
+export function belgianHolidays() {
+  return [
+    ['2026-01-01', 'Nouvel An'], ['2026-04-06', 'Lundi de Pâques'], ['2026-05-01', 'Fête du Travail'],
+    ['2026-05-14', 'Ascension'], ['2026-05-25', 'Lundi de Pentecôte'], ['2026-07-21', 'Fête nationale'],
+    ['2026-08-15', 'Assomption'], ['2026-11-01', 'Toussaint'], ['2026-11-11', 'Armistice'], ['2026-12-25', 'Noël'],
+    ['2027-01-01', 'Nouvel An'], ['2027-03-29', 'Lundi de Pâques'], ['2027-05-01', 'Fête du Travail'],
+    ['2027-05-06', 'Ascension'], ['2027-05-17', 'Lundi de Pentecôte'], ['2027-07-21', 'Fête nationale'],
+    ['2027-08-15', 'Assomption'], ['2027-11-01', 'Toussaint'], ['2027-11-11', 'Armistice'], ['2027-12-25', 'Noël'],
+  ];
+}
+export function prefillHolidays({ now = new Date() } = {}) {
+  checkpoint('pré-remplissage jours fériés');
+  let added = 0;
+  for (const [date, label] of belgianHolidays()) {
+    if (new Date(date + 'T23:59:59') < now) continue;
+    const exists = doctor().closures.some((c) => c.from === date && c.to === date);
+    if (exists) continue;
+    doctor().closures.push({ from: date, to: date, label: `Férié : ${label}`, holiday: true });
+    added++;
+  }
+  logOp('medecin', 'jours fériés pré-remplis', `${added} ajouté(s)`);
+  save();
+  return added;
+}
+
+// --- Éditeur de trame (créneaux ordinaires / avis) ---
+function normalizeTime(t) { return /^\d{2}:\d{2}$/.test(t) ? t : null; }
+export function addSlot(weekday, time, kind = 'ordinaire') {
+  const t = normalizeTime(time); if (!t) return { error: 'format' };
+  const tpl = kind === 'avis' ? doctor().avisTemplate : doctor().weeklyTemplate;
+  if (!tpl[weekday]) tpl[weekday] = [];
+  if (tpl[weekday].includes(t)) return { error: 'exists' };
+  checkpoint('ajout créneau trame');
+  tpl[weekday].push(t); tpl[weekday].sort();
+  logOp('medecin', 'créneau ajouté', `${kind} ${weekday} ${t}`);
+  save();
+  return { ok: true };
+}
+export function removeSlot(weekday, time, kind = 'ordinaire') {
+  const tpl = kind === 'avis' ? doctor().avisTemplate : doctor().weeklyTemplate;
+  if (!tpl[weekday] || !tpl[weekday].includes(time)) return { error: 'notfound' };
+  checkpoint('retrait créneau trame');
+  tpl[weekday] = tpl[weekday].filter((x) => x !== time);
+  if (tpl[weekday].length === 0) delete tpl[weekday];
+  logOp('medecin', 'créneau retiré', `${kind} ${weekday} ${time}`);
+  save();
+  return { ok: true };
+}
+export function setAvisCapacity({ base, max }) {
+  checkpoint('capacité avis');
+  const cap = doctor().avisCapacity;
+  if (base != null) cap.base = Number(base);
+  if (max != null) cap.max = Number(max);
+  cap.target = cap.base;
+  logOp('medecin', 'capacité avis modifiée', `base ${cap.base} / max ${cap.max}`);
+  save();
+  return cap;
+}
+
+// --- Historique des rendez-vous d'un patient (passés / non planifiés) ---
+export function pastAppointmentsOf(patientId, now = new Date()) {
+  return get().appointments
+    .filter((a) => a.patientId === patientId && (a.status !== 'planifie' || new Date(a.datetime) <= now))
+    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+}
+// Rendez-vous futurs planifiés d'un patient tombant dans une fermeture (à reprogrammer).
+export function appointmentsInClosures(patientId, now = new Date()) {
+  return futureAppointmentsOf(patientId, now).filter((a) => avail.isClosed(new Date(a.datetime), doctor().closures));
+}
+
+// --- Statistiques enrichies ---
+export function statsDetailed(now = new Date()) {
+  const base = stats(now);
+  const appts = get().appointments;
+  const wdNames = ['', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+  // Absences par jour de semaine.
+  const absByWd = {};
+  appts.filter((a) => a.status === 'absent').forEach((a) => { const wd = new Date(a.datetime).getDay() || 7; absByWd[wdNames[wd]] = (absByWd[wdNames[wd]] || 0) + 1; });
+  // Taux de conversion demande -> parcours démarré.
+  const demands = get().demands;
+  const started = demands.filter((d) => d.circuitInstanceId).length;
+  const conversion = demands.length ? Math.round((started / demands.length) * 100) : 0;
+  // Délai moyen d'accès par circuit (jours entre dépôt et 1re consultation planifiée).
+  const delayByCircuit = {};
+  for (const d of demands) {
+    if (!d.circuitInstanceId) continue;
+    const first = appts.filter((a) => a.circuitInstanceId === d.circuitInstanceId).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0];
+    if (!first) continue;
+    const days = Math.round((first - new Date(d.createdAt)) / (24 * 3600 * 1000));
+    (delayByCircuit[d.circuitId] = delayByCircuit[d.circuitId] || []).push(days);
+  }
+  const avgDelay = {};
+  for (const [k, arr] of Object.entries(delayByCircuit)) avgDelay[k] = Math.round(arr.reduce((s, x) => s + x, 0) / arr.length);
+  return { ...base, absByWeekday: absByWd, conversion, avgDelayByCircuit: avgDelay };
+}
+
+// --- Agrégateur de décisions en attente (centre de décisions / cloche) ---
+export function pendingDecisions(now = new Date()) {
+  const items = [];
+  for (const r of openRequests()) items.push({ type: 'demande-explicite', label: `Demande à traiter — ${patientById(r.patientId)?.displayName || r.patientId}`, id: r.id });
+  for (const d of get().demands) {
+    if (d.status === 'deposee') items.push({ type: 'demande-nouvelle', label: `Nouvelle demande à examiner — ${circuitById(d.circuitId)?.label || d.circuitId}`, id: d.id });
+    else if (d.status === 'acceptee' && !d.circuitInstanceId) items.push({ type: 'parcours-a-demarrer', label: `Parcours à démarrer — ${circuitById(d.circuitId)?.label}`, id: d.id });
+    else if (d.status === 'acceptee-conditionnelle') items.push({ type: 'relais-manquant', label: `Relais prescripteur à identifier — ${circuitById(d.circuitId)?.label}`, id: d.id });
+    const c = circuitById(d.circuitId);
+    if (d.circuitInstanceId && c && c.therapeuticNeedsDecision && !d.therapeuticStarted) items.push({ type: 'bloc-therapeutique', label: `Bloc thérapeutique à décider — ${c.label}`, id: d.id });
+  }
+  // Rendez-vous tombant dans une fermeture (à traiter).
+  for (const c of doctor().closures) {
+    const impacted = avail.appointmentsInClosure(get().appointments, c);
+    if (impacted.length) items.push({ type: 'fermeture-impact', label: `${impacted.length} rdv à traiter (fermeture ${c.label})`, id: c.from });
+  }
+  return items;
+}
+export function pendingDecisionsCount(now = new Date()) { return pendingDecisions(now).length; }

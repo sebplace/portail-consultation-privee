@@ -5,7 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/rules.test.mjs",
+    "test": "node tests/rules.test.mjs && node tests/store.test.mjs",
+    "test:engine": "node tests/rules.test.mjs",
+    "test:acceptance": "node tests/store.test.mjs",
     "serve": "node tests/serve.mjs"
   },
   "license": "UNLICENSED"

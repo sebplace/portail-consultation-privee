@@ -6,7 +6,7 @@
 // Toutes les opérations sont journalisées.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, toast } from './dom.js';
+import { el, clear, fmtDateTime, fmtDate, fmtTime, toast, modal, downloadText } from './dom.js';
 
 let selectedId = null;
 
@@ -96,7 +96,7 @@ function patientPanel(mount, patient) {
         el('div', { class: 'muted small' }, store.STATUS_LABEL[a.status] + (a.emergency ? ' · urgence' : ''))),
       el('div', { class: 'row-actions wrap' },
         future ? el('button', { class: 'btn btn-ghost', onclick: () => moveForView(mount, patient, a) }, 'Déplacer') : null,
-        future ? el('button', { class: 'btn btn-ghost danger', onclick: () => { if (confirm('Annuler ce rendez-vous ?')) { store.cancelAppointment(a.id, { actor: 'secretariat' }); toast('Annulé.'); render(mount); } } }, 'Annuler') : null,
+        future ? el('button', { class: 'btn btn-ghost danger', onclick: () => cancelForReason(mount, a) }, 'Annuler') : null,
         // Présence administrative : effectué / absent (jamais automatique)
         (a.status === 'planifie') ? el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'effectue', { actor: 'secretariat' }); toast('Marqué effectué.'); render(mount); } }, 'Présent') : null,
         (a.status === 'planifie') ? el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'absent', { actor: 'secretariat' }); toast('Marqué absent.'); render(mount); } }, 'Absent') : null,
@@ -114,7 +114,7 @@ function patientPanel(mount, patient) {
       el('button', { class: 'btn btn-primary', onclick: () => bookForView(mount, patient) }, 'Réserver'),
       el('button', { class: 'btn btn-ghost', onclick: () => {
         if (onWaitlist) { store.leaveWaitlist(patient.id); toast('Retiré du désistement.'); }
-        else { store.joinWaitlist(patient.id, { actor: 'secretariat' }); toast('Inscrit au désistement.'); }
+        else { const r = store.joinWaitlist(patient.id, { actor: 'secretariat' }); if (r && r.error) { toast(r.message, 'err'); return; } toast('Inscrit au désistement.'); }
         render(mount);
       } }, onWaitlist ? 'Retirer du désistement' : 'Inscrire au désistement'),
       el('button', { class: 'btn btn-ghost', onclick: () => toast("Lien d'accès (ré)envoyé (simulation).") }, "Aider à l'accès"),
@@ -133,11 +133,49 @@ function patientPanel(mount, patient) {
   );
 }
 
+// Annulation avec motif par le secrétariat.
+function cancelForReason(mount, a) {
+  const reason = el('input', { class: 'field', placeholder: 'Motif (optionnel)' });
+  const m = modal(`Annuler — ${fmtDateTime(a.datetime)}`, [el('label', { class: 'lbl' }, 'Motif'), reason], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Retour'),
+    el('button', { class: 'btn btn-ghost danger', onclick: () => { store.cancelAppointment(a.id, { actor: 'secretariat', reason: reason.value }); m.close(); toast('Rendez-vous annulé.'); render(mount); } }, "Confirmer l'annulation"),
+  ]);
+}
+
+// Agenda du jour, imprimable / exportable.
+function dayAgenda(mount) {
+  const now = new Date();
+  const today = store.appointments().filter((a) => a.status === 'planifie' && fmtDate(a.datetime) === fmtDate(now))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const rows = today.map((a) => `${fmtTime(a.datetime)}  ${store.patientById(a.patientId)?.displayName || a.patientId}  (${a.durationMin} min)`);
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, `Agenda du jour — ${fmtDate(now)}`),
+      el('div', { class: 'row-actions' },
+        el('button', { class: 'btn btn-ghost', onclick: () => window.print() }, '🖨️ Imprimer'),
+        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('agenda-du-jour.txt', `Agenda du ${fmtDate(now)}\n\n` + (rows.join('\n') || 'Aucun rendez-vous.'), 'text/plain;charset=utf-8'); toast('Agenda exporté.'); } }, 'Exporter'),
+      ),
+    ),
+    today.length ? el('div', { class: 'list' }, today.map((a) => el('div', { class: 'row-item' },
+      el('div', {}, el('div', { class: 'row-title' }, `${fmtTime(a.datetime)} — ${store.patientById(a.patientId)?.displayName || a.patientId}`),
+        el('div', { class: 'muted small' }, `${a.durationMin} min${a.emergency ? ' · urgence' : ''}`)),
+    ))) : el('div', { class: 'empty' }, 'Aucun rendez-vous aujourd\'hui.'),
+  );
+}
+
 function head(mount) {
   mount.appendChild(el('div', { class: 'space-head' },
     el('div', {}, el('h2', {}, 'Secrétariat'),
       el('p', { class: 'muted' }, 'Accès limité — aucune donnée clinique. Opérations journalisées.')),
   ));
+}
+
+function restrictionsBox() {
+  return el('div', { class: 'card' },
+    el('h3', {}, 'Périmètre du secrétariat'),
+    el('div', { class: 'muted small' }, 'Autorisé : rechercher, réserver / déplacer / annuler, désistement, présence / absence, encoder l\'urgence 12:15 après accord du médecin.'),
+    el('div', { class: 'muted small', style: 'margin-top:6px' }, 'Non autorisé : lire les commentaires cliniques, modifier une cadence, accepter / refuser une demande, prolonger un parcours, ouvrir une exception. Toutes les opérations sont journalisées.'),
+  );
 }
 
 function render(mount) {
@@ -147,7 +185,9 @@ function render(mount) {
     if (p) { mount.appendChild(patientPanel(mount, p)); return; }
     selectedId = null;
   }
+  mount.appendChild(dayAgenda(mount));
   mount.appendChild(searchCard(mount));
+  mount.appendChild(restrictionsBox());
 }
 
 export function mountSecretary(node) { render(node); }
