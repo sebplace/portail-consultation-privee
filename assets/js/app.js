@@ -1,6 +1,7 @@
-// Routeur minimal : bascule Espace patient / Espace medecin.
+// Routeur minimal : bascule Patient / Secrétariat / Médecin.
 import * as store from './core/store.js';
 import { mountPatient } from './views/patient.js';
+import { mountSecretary } from './views/secretary.js';
 import { mountDoctor } from './views/doctor.js';
 import { el, clear } from './views/dom.js';
 
@@ -10,9 +11,11 @@ const app = document.getElementById('app');
 let space = 'patient';
 
 function switcher() {
+  const seg = (id, label) => el('button', { class: 'seg' + (space === id ? ' active' : ''), onclick: () => { space = id; render(); } }, label);
   return el('div', { class: 'switcher' },
-    el('button', { class: 'seg' + (space === 'patient' ? ' active' : ''), onclick: () => { space = 'patient'; render(); } }, 'Espace patient'),
-    el('button', { class: 'seg' + (space === 'medecin' ? ' active' : ''), onclick: () => { space = 'medecin'; render(); } }, 'Espace médecin'),
+    seg('patient', 'Patient'),
+    seg('secretariat', 'Secrétariat'),
+    seg('medecin', 'Médecin'),
   );
 }
 
@@ -30,6 +33,7 @@ function render() {
   const main = el('main', { class: 'container' });
   app.appendChild(main);
   if (space === 'patient') mountPatient(main);
+  else if (space === 'secretariat') mountSecretary(main);
   else mountDoctor(main);
 
   app.appendChild(el('footer', { class: 'foot' },

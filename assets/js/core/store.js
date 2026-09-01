@@ -1,39 +1,37 @@
-// Persistance locale (localStorage) + journal + notifications neutres.
-// Aucune donnee ne quitte le navigateur : prototype pour avis uniquement.
+// Persistance locale (localStorage) + logique métier : statuts, rôles, deux files,
+// circuits atomiques, migration CSV, notifications neutres, journal.
+// Aucune donnée ne quitte le navigateur : prototype pour avis uniquement.
 import { buildSeed } from '../data/seed.js';
-import { bookingCapReached } from './rules.js';
+import * as avail from './availability.js';
+import * as rules from './rules.js';
 
-const KEY = 'pcp.state.v1';
-
+const KEY = 'pcp.state.v3';
 let state = null;
 const listeners = new Set();
 
 export function load() {
   const raw = localStorage.getItem(KEY);
   if (raw) {
-    try { state = JSON.parse(raw); }
-    catch { state = buildSeed(new Date()); }
+    try {
+      const parsed = JSON.parse(raw);
+      state = (parsed && parsed.version === 3) ? parsed : buildSeed(new Date());
+    } catch { state = buildSeed(new Date()); }
   } else {
     state = buildSeed(new Date());
   }
   return state;
 }
-
-export function save() {
-  localStorage.setItem(KEY, JSON.stringify(state));
-  listeners.forEach((fn) => fn(state));
-}
-
-export function reset() {
-  state = buildSeed(new Date());
-  save();
-  return state;
-}
-
+export function save() { localStorage.setItem(KEY, JSON.stringify(state)); listeners.forEach((fn) => fn(state)); }
+export function reset() { state = buildSeed(new Date()); save(); return state; }
 export function get() { return state || load(); }
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-// --- Selecteurs ---
+function uid(p) { return `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`; }
+
+// --- Sélecteurs de base ---
+export function doctor() { return get().doctor; }
+export function circuits() { return get().circuits; }
+export function circuitById(id) { return get().circuits.find((c) => c.id === id); }
 export function patients() { return get().patients; }
 export function patientById(id) { return get().patients.find((p) => p.id === id); }
 export function patientByCode(code) {
@@ -41,134 +39,32 @@ export function patientByCode(code) {
   return get().patients.find((p) => p.code.toUpperCase() === c);
 }
 export function appointments() { return get().appointments; }
-export function appointmentsOf(patientId) {
-  return get().appointments.filter((a) => a.patientId === patientId);
-}
-export function futureAppointmentsOf(patientId, now = new Date()) {
-  return get().appointments.filter((a) =>
-    a.patientId === patientId && a.status === 'booked' && new Date(a.datetime) > now);
-}
-export function bookedAppointments() {
-  return get().appointments.filter((a) => a.status === 'booked');
+export function appointmentsOf(pid) { return get().appointments.filter((a) => a.patientId === pid); }
+export function futureAppointmentsOf(pid, now = new Date()) {
+  return get().appointments.filter((a) => a.patientId === pid && a.status === 'planifie' && new Date(a.datetime) > now);
 }
 export function requests() { return get().requests; }
 export function openRequests() { return get().requests.filter((r) => r.status === 'nouvelle'); }
+export function demands() { return get().demands; }
 export function waitlist() { return get().waitlist; }
+export function offers() { return get().offers; }
+export function migrations() { return get().migrations; }
 export function logEntries() { return [...get().log].reverse(); }
 
-// --- Journalisation ---
+// --- Disponibilité : créneaux ouverts (publics) ---
+export function openSlots({ now = new Date(), weeks, includeEmergency = false } = {}) {
+  const d = doctor();
+  const from = new Date(now.getTime());
+  const to = new Date(now.getTime() + (weeks || d.horizonWeeks) * 7 * 24 * 3600 * 1000);
+  return avail.generateOpenSlots({ doctor: d, appointments: appointments(), from, to, now, includeEmergency });
+}
+
+// --- Journal ---
 export function logOp(actor, action, detail) {
   get().log.push({ ts: new Date().toISOString(), actor, action, detail });
 }
 
-// --- Mutations rdv ---
-function uid(prefix) { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`; }
-
-export function bookAppointment(patientId, datetimeISO, durationMin) {
-  const patient = patientById(patientId);
-  // Plafond de programmation : nombre max de rdv futurs simultanes.
-  if (patient && bookingCapReached(get().appointments, patient, new Date())) {
-    return { error: 'cap', message: `Plafond atteint : ${patient.rule.bookAhead} rendez-vous a venir maximum.` };
-  }
-  // Protection anti double-reservation : le creneau ne doit pas chevaucher un rdv existant.
-  const start = new Date(datetimeISO);
-  const end = new Date(start.getTime() + durationMin * 60000);
-  const clash = get().appointments.some((a) => {
-    if (a.status !== 'booked') return false;
-    const s = new Date(a.datetime);
-    const e = new Date(s.getTime() + a.durationMin * 60000);
-    return start < e && s < end;
-  });
-  if (clash) return { error: 'clash', message: 'Ce creneau vient d\'etre pris. Choisissez-en un autre.' };
-  const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin, status: 'booked' };
-  get().appointments.push(a);
-  logOp('patient', 'prise', `${patientId} @ ${datetimeISO}`);
-  save();
-  return a;
-}
-
-export function moveAppointment(appointmentId, newDatetimeISO) {
-  const a = get().appointments.find((x) => x.id === appointmentId);
-  if (!a) return null;
-  const old = a.datetime;
-  a.datetime = newDatetimeISO;
-  a.status = 'booked';
-  logOp('patient', 'deplacement', `${a.patientId} ${old} -> ${newDatetimeISO}`);
-  save();
-  return a;
-}
-
-export function cancelAppointment(appointmentId) {
-  const a = get().appointments.find((x) => x.id === appointmentId);
-  if (!a) return null;
-  a.status = 'cancelled';
-  logOp('patient', 'annulation', `${a.patientId} @ ${a.datetime}`);
-  save();
-  return a;
-}
-
-// --- Demandes (declenchent une notification neutre) ---
-export const REQUEST_TYPES = [
-  { id: 'parler', label: 'Besoin de vous parler avant' },
-  { id: 'ordonnance', label: "Renouvellement d'ordonnance" },
-  { id: 'rapport', label: 'Demande de rapport' },
-  { id: 'autre', label: 'Autre demande' },
-];
-
-export function addRequest(patientId, type, note, linkedAppointmentId = null) {
-  const r = {
-    id: uid('r'), patientId, type, note: note || '',
-    linkedAppointmentId, status: 'nouvelle', createdAt: new Date().toISOString(),
-  };
-  get().requests.push(r);
-  logOp('patient', 'demande', `${patientId} type=${type}`);
-  // Notification NEUTRE (aucune donnee clinique) : simple signal + lien.
-  pushNeutralEmail();
-  save();
-  return r;
-}
-
-export function resolveRequest(requestId) {
-  const r = get().requests.find((x) => x.id === requestId);
-  if (!r) return null;
-  r.status = 'traitee';
-  logOp('medecin', 'traitement demande', requestId);
-  save();
-  return r;
-}
-
-// --- Liste de desistement ---
-export function joinWaitlist(patientId) {
-  if (get().waitlist.some((w) => w.patientId === patientId)) return;
-  get().waitlist.push({ patientId, createdAt: new Date().toISOString() });
-  logOp('patient', 'desistement', `${patientId} inscrit`);
-  save();
-}
-export function leaveWaitlist(patientId) {
-  get().waitlist = get().waitlist.filter((w) => w.patientId !== patientId);
-  save();
-}
-
-// --- Regles (tableau de bord medecin) ---
-export function updateRule(patientId, rule) {
-  const p = patientById(patientId);
-  if (!p) return null;
-  p.rule = { ...p.rule, ...rule };
-  logOp('medecin', 'modification regles', `${patientId}`);
-  save();
-  return p.rule;
-}
-
-// --- Exceptions (creneau hors regles autorise par le medecin) ---
-export function approveException(patientId, datetimeISO, durationMin) {
-  const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin, status: 'booked', exception: true };
-  get().appointments.push(a);
-  logOp('medecin', 'exception approuvee', `${patientId} @ ${datetimeISO}`);
-  save();
-  return a;
-}
-
-// --- File de notifications e-mail neutres (stub, cote medecin) ---
+// --- Notifications e-mail NEUTRES (aucun contenu clinique) ---
 let neutralInbox = [];
 export function pushNeutralEmail() {
   neutralInbox.push({
@@ -178,3 +74,346 @@ export function pushNeutralEmail() {
   });
 }
 export function neutralEmails() { return [...neutralInbox].reverse(); }
+
+// --- Statuts ---
+export const STATUSES = ['planifie', 'effectue', 'deplace', 'annule', 'absent'];
+export const STATUS_LABEL = {
+  planifie: 'Planifié', effectue: 'Effectué', deplace: 'Déplacé', annule: 'Annulé', absent: 'Absent',
+};
+
+// --- Réservation ordinaire (patient / secrétariat) : aucune notification ---
+function overlapsBooked(startISO, durationMin) {
+  const s = new Date(startISO).getTime();
+  const e = s + durationMin * 60000;
+  return get().appointments.some((a) => {
+    if (a.status !== 'planifie') return false;
+    const as = new Date(a.datetime).getTime();
+    const ae = as + (a.durationMin || 45) * 60000;
+    return s < ae && as < e;
+  });
+}
+
+export function bookAppointment(patientId, datetimeISO, { actor = 'patient', circuitInstanceId = null } = {}) {
+  const patient = patientById(patientId);
+  const dur = doctor().slotDurationMin;
+  if (patient && !circuitInstanceId) {
+    const cad = patient.cadence;
+    if (rules.bookingCapReached(get().appointments, patient, cad, new Date())) {
+      return { error: 'cap', message: `Plafond atteint : ${cad.maxFuture} rendez-vous à venir maximum.` };
+    }
+  }
+  if (overlapsBooked(datetimeISO, dur)) return { error: 'clash', message: "Ce créneau vient d'être pris. Choisissez-en un autre." };
+  const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin: dur, status: 'planifie', circuitInstanceId };
+  get().appointments.push(a);
+  logOp(actor, 'prise', `${patientId} @ ${datetimeISO}`);
+  save();
+  return a;
+}
+
+// Déplacement : ne décale JAMAIS la série. Marque l'ancien 'deplace', crée un 'planifie'.
+export function moveAppointment(appointmentId, newDatetimeISO, { actor = 'patient' } = {}) {
+  const a = get().appointments.find((x) => x.id === appointmentId);
+  if (!a) return { error: 'notfound' };
+  const dur = a.durationMin || doctor().slotDurationMin;
+  if (overlapsBooked(newDatetimeISO, dur)) return { error: 'clash', message: 'Créneau déjà occupé.' };
+  a.status = 'deplace';
+  const b = { id: uid('a'), patientId: a.patientId, datetime: newDatetimeISO, durationMin: dur, status: 'planifie', circuitInstanceId: a.circuitInstanceId || null, movedFrom: a.id };
+  a.movedTo = b.id;
+  get().appointments.push(b);
+  logOp(actor, 'deplacement', `${a.patientId} ${a.datetime} -> ${newDatetimeISO}`);
+  save();
+  return b;
+}
+
+export function cancelAppointment(appointmentId, { actor = 'patient' } = {}) {
+  const a = get().appointments.find((x) => x.id === appointmentId);
+  if (!a) return null;
+  a.status = 'annule';
+  logOp(actor, 'annulation', `${a.patientId} @ ${a.datetime}`);
+  save();
+  return a;
+}
+
+// Le logiciel ne marque JAMAIS 'effectue' tout seul : c'est une action explicite.
+export function setStatus(appointmentId, status, { actor = 'medecin' } = {}) {
+  if (!STATUSES.includes(status)) return null;
+  const a = get().appointments.find((x) => x.id === appointmentId);
+  if (!a) return null;
+  a.status = status;
+  logOp(actor, 'statut', `${a.patientId} @ ${a.datetime} -> ${status}`);
+  save();
+  return a;
+}
+
+// --- Demandes explicites (commentaire) => notification neutre ---
+export const REQUEST_TYPES = [
+  { id: 'parler', label: 'Besoin de vous parler avant' },
+  { id: 'ordonnance', label: "Renouvellement d'ordonnance" },
+  { id: 'rapport', label: 'Demande de rapport' },
+  { id: 'autre', label: 'Autre demande' },
+];
+export function addRequest(patientId, type, note) {
+  const r = { id: uid('r'), patientId, type, note: note || '', status: 'nouvelle', createdAt: new Date().toISOString() };
+  get().requests.push(r);
+  logOp('patient', 'demande', `${patientId} type=${type}`);
+  pushNeutralEmail();
+  save();
+  return r;
+}
+export function resolveRequest(id) {
+  const r = get().requests.find((x) => x.id === id);
+  if (!r) return null;
+  r.status = 'traitee';
+  logOp('medecin', 'traitement demande', id);
+  save();
+  return r;
+}
+
+// --- Règles / ancrage (médecin) ---
+export function updateCadence(patientId, cadence) {
+  const p = patientById(patientId);
+  if (!p) return null;
+  p.cadence = { ...p.cadence, ...cadence };
+  logOp('medecin', 'modification cadence', patientId);
+  save();
+  return p.cadence;
+}
+export function setAnchor(patientId, dateISOorNull) {
+  const p = patientById(patientId);
+  if (!p) return null;
+  p.anchorDate = dateISOorNull;
+  logOp('medecin', 'ancrage explicite', `${patientId} = ${dateISOorNull || '(auto)'}`);
+  save();
+  return p.anchorDate;
+}
+
+// --- Exception clinique (médecin uniquement) : hors règles, y compris urgence 12:15 ---
+export function approveException(patientId, datetimeISO, { emergency = false } = {}) {
+  const a = { id: uid('a'), patientId, datetime: datetimeISO, durationMin: doctor().slotDurationMin, status: 'planifie', exception: true, emergency };
+  get().appointments.push(a);
+  logOp('medecin', emergency ? 'urgence 12:15 autorisée' : 'exception approuvée', `${patientId} @ ${datetimeISO}`);
+  save();
+  return a;
+}
+// Autorisation tracée pour que le secrétariat encode l'urgence 12:15.
+export function authorizeEmergency(patientId, datetimeISO) {
+  const id = uid('emgauth');
+  get().log.push({ ts: new Date().toISOString(), actor: 'medecin', action: 'autorisation urgence', detail: `${patientId} @ ${datetimeISO} (id ${id})` });
+  if (!state.emergencyAuth) state.emergencyAuth = [];
+  state.emergencyAuth.push({ id, patientId, datetime: datetimeISO, used: false });
+  save();
+  return id;
+}
+export function pendingEmergencyAuth() { return (get().emergencyAuth || []).filter((e) => !e.used); }
+export function useEmergencyAuth(authId, { actor = 'secretariat' } = {}) {
+  const e = (get().emergencyAuth || []).find((x) => x.id === authId);
+  if (!e || e.used) return { error: 'invalid' };
+  e.used = true;
+  const a = { id: uid('a'), patientId: e.patientId, datetime: e.datetime, durationMin: doctor().slotDurationMin, status: 'planifie', emergency: true };
+  get().appointments.push(a);
+  logOp(actor, 'urgence 12:15 encodée', `${e.patientId} @ ${e.datetime} (auth ${authId})`);
+  save();
+  return a;
+}
+
+// --- File 1 : liste de désistement (patient déjà suivi voulant AVANCER) ---
+// Inscription expire au prochain rdv du patient. Offre successive 48h.
+export function joinWaitlist(patientId, { actor = 'patient' } = {}) {
+  if (get().waitlist.some((w) => w.patientId === patientId)) return;
+  const next = futureAppointmentsOf(patientId).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0] || null;
+  get().waitlist.push({ patientId, createdAt: new Date().toISOString(), expiresAt: next ? next.toISOString() : null });
+  logOp(actor, 'désistement inscription', patientId);
+  save();
+}
+export function leaveWaitlist(patientId) {
+  get().waitlist = get().waitlist.filter((w) => w.patientId !== patientId);
+  save();
+}
+// Purge les inscriptions expirées (prochain rdv passé/atteint).
+export function purgeWaitlist(now = new Date()) {
+  const before = get().waitlist.length;
+  get().waitlist = get().waitlist.filter((w) => !w.expiresAt || new Date(w.expiresAt) > now);
+  if (get().waitlist.length !== before) save();
+}
+// Propose une place libérée à la 1re personne compatible (offre 48h).
+export function offerFreedSlot(datetimeISO, { now = new Date() } = {}) {
+  const slots = openSlots({ now });
+  const candidate = new Date(datetimeISO);
+  const list = get().waitlist
+    .map((w) => ({ w, patient: patientById(w.patientId) }))
+    .filter(({ patient }) => {
+      if (!patient) return false;
+      const anchor = rules.resolveAnchor({ appointments: appointments(), patientId: patient.id, explicitAnchor: patient.anchorDate }).date;
+      const { slots: compat } = rules.compatibleSlots({ openSlots: slots, anchor, cadence: patient.cadence, now });
+      // la place libérée doit AVANCER le patient (avant son prochain rdv actuel)
+      const next = futureAppointmentsOf(patient.id, now).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0];
+      const earlier = next ? candidate < next : true;
+      return earlier && compat.some((d) => d.getTime() === candidate.getTime());
+    })
+    .sort((a, b) => new Date(a.w.createdAt) - new Date(b.w.createdAt));
+  if (list.length === 0) return { error: 'none', message: 'Aucune personne compatible.' };
+  const first = list[0];
+  const offer = {
+    id: uid('offer'), patientId: first.patient.id, datetime: datetimeISO,
+    createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 48 * 3600 * 1000).toISOString(),
+    status: 'en cours', order: list.map((x) => x.patient.id),
+  };
+  get().offers.push(offer);
+  logOp('systeme', 'désistement offre', `${first.patient.id} @ ${datetimeISO} (48h)`);
+  save();
+  return offer;
+}
+
+// --- File 2 : avis / parcours ciblés (NOUVELLE demande) ---
+export const DEMAND_STATUSES = {
+  deposee: 'Déposée', acceptee: 'Acceptée', 'acceptee-conditionnelle': 'Acceptée (relais en attente)',
+  refusee: 'Refusée', 'en-file': 'En file', invitee: 'Invitée', close: 'Clôturée',
+};
+export function submitDemand(payload) {
+  const d = {
+    id: uid('dem'), createdAt: new Date().toISOString(), status: 'deposee',
+    circuitId: payload.circuitId, objectif: payload.objectif || '', origine: payload.origine || 'personnelle',
+    adressePar: payload.adressePar || '', relais: payload.relais || '', dispos: payload.dispos || '',
+    note: payload.note || '', ackLimites: !!payload.ackLimites,
+    invitations: 0, priority: 0,
+  };
+  get().demands.push(d);
+  logOp('demandeur', 'nouvelle demande', `${d.circuitId}`);
+  pushNeutralEmail();
+  save();
+  return d;
+}
+// Le médecin accepte (éventuellement conditionnellement si relais requis manquant).
+export function acceptDemand(demandId) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return null;
+  const c = circuitById(d.circuitId);
+  if (c && c.needsRelay && !d.relais) { d.status = 'acceptee-conditionnelle'; }
+  else { d.status = 'acceptee'; }
+  d.priority = d.priority || Date.now();
+  logOp('medecin', 'acceptation demande', `${d.id} -> ${d.status}`);
+  save();
+  return d;
+}
+export function refuseDemand(demandId) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return null;
+  d.status = 'refusee';
+  logOp('medecin', 'refus demande', d.id);
+  save();
+  return d;
+}
+export function setRelay(demandId, relais) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return null;
+  d.relais = relais;
+  if (d.status === 'acceptee-conditionnelle' && relais) { d.status = 'acceptee'; logOp('medecin', 'relais identifié', d.id); }
+  save();
+  return d;
+}
+export function setPriority(demandId, priority) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return null;
+  d.priority = Number(priority);
+  save();
+  return d;
+}
+
+// --- Circuits : réservation ATOMIQUE de la série initiale ---
+// On associe la demande à un patient (démo : on réutilise un faux patient ou on crée un léger profil).
+export function startCircuitAtomic(demandId, seriesISO, { patientId } = {}) {
+  const d = get().demands.find((x) => x.id === demandId);
+  if (!d) return { error: 'notfound' };
+  // Re-vérifie que TOUS les créneaux sont encore libres (atomicité).
+  for (const isoDt of seriesISO) {
+    if (overlapsBooked(isoDt, doctor().slotDurationMin)) {
+      return { error: 'clash', message: `Le créneau ${isoDt} n'est plus libre — série non démarrée.` };
+    }
+  }
+  const instanceId = uid('circ');
+  const created = seriesISO.map((isoDt) => {
+    const a = { id: uid('a'), patientId: patientId || d.id, datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId };
+    get().appointments.push(a);
+    return a;
+  });
+  d.status = 'invitee';
+  d.circuitInstanceId = instanceId;
+  d.invitations = (d.invitations || 0) + 1;
+  d.invitedAt = new Date().toISOString();
+  d.inviteExpiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+  logOp('medecin', 'circuit démarré (atomique)', `${d.id} instance=${instanceId} n=${created.length}`);
+  save();
+  return { instanceId, created };
+}
+// Prolongation / clôture (décision humaine, journalisée). Pas de plafond clinique.
+export function extendCircuit(instanceId, addSeriesISO) {
+  for (const isoDt of addSeriesISO) {
+    if (overlapsBooked(isoDt, doctor().slotDurationMin)) return { error: 'clash', message: `Créneau ${isoDt} occupé.` };
+  }
+  const created = addSeriesISO.map((isoDt) => {
+    const a = { id: uid('a'), patientId: circuitPatient(instanceId), datetime: isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', circuitInstanceId: instanceId };
+    get().appointments.push(a);
+    return a;
+  });
+  logOp('medecin', 'prolongation circuit', `${instanceId} +${created.length}`);
+  save();
+  return created;
+}
+export function closeCircuitEarly(instanceId) {
+  const freed = get().appointments.filter((a) => a.circuitInstanceId === instanceId && a.status === 'planifie' && new Date(a.datetime) > new Date());
+  freed.forEach((a) => { a.status = 'annule'; });
+  logOp('medecin', 'clôture anticipée circuit', `${instanceId} libère ${freed.length}`);
+  save();
+  return freed.length;
+}
+function circuitPatient(instanceId) {
+  const a = get().appointments.find((x) => x.circuitInstanceId === instanceId);
+  return a ? a.patientId : null;
+}
+
+// --- Migration CSV (fictive) : prévisualisation + contrôle ---
+export function analyzeCsv(text) {
+  const lines = (text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const rows = [];
+  const seen = new Set();
+  const dur = doctor().slotDurationMin;
+  const start = lines[0] && lines[0].toLowerCase().includes('code_patient') ? 1 : 0;
+  for (let i = start; i < lines.length; i++) {
+    const [code, date, heure, duree] = lines[i].split(';').map((s) => (s || '').trim());
+    const row = { raw: lines[i], code, date, heure, duree, issues: [] };
+    const patient = patientByCode(code);
+    if (!patient) row.issues.push('patient inconnu');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(heure)) row.issues.push('format date/heure');
+    if (duree && Number(duree) !== dur) row.issues.push(`durée ${duree}≠${dur}`);
+    let isoDt = null;
+    if (row.issues.length === 0) {
+      const [y, m, d] = date.split('-').map(Number);
+      const [hh, mm] = heure.split(':').map(Number);
+      isoDt = new Date(y, m - 1, d, hh, mm, 0, 0).toISOString();
+      const key = `${patient.id}|${isoDt}`;
+      if (seen.has(key)) row.issues.push('doublon');
+      else seen.add(key);
+      if (overlapsBooked(isoDt, dur)) row.issues.push('collision agenda');
+    }
+    row.patientId = patient ? patient.id : null;
+    row.isoDt = isoDt;
+    row.accepted = row.issues.length === 0;
+    rows.push(row);
+  }
+  return rows;
+}
+export function commitMigration(rows) {
+  const accepted = rows.filter((r) => r.accepted);
+  let imported = 0;
+  for (const r of accepted) {
+    if (overlapsBooked(r.isoDt, doctor().slotDurationMin)) { r.accepted = false; r.issues.push('collision (commit)'); continue; }
+    get().appointments.push({ id: uid('a'), patientId: r.patientId, datetime: r.isoDt, durationMin: doctor().slotDurationMin, status: 'planifie', imported: true });
+    imported++;
+  }
+  const rejected = rows.length - imported;
+  const record = { ts: new Date().toISOString(), total: rows.length, imported, rejected, rows: rows.map((r) => ({ raw: r.raw, accepted: r.accepted, issues: r.issues })) };
+  get().migrations.push(record);
+  logOp('medecin', 'migration CSV', `importés ${imported} / rejetés ${rejected} / total ${rows.length}`);
+  save();
+  return record;
+}

@@ -125,6 +125,26 @@ textarea.field { resize: vertical; }
 /* Footer */
 .foot { text-align: center; padding: 20px; color: var(--muted); font-size: .8rem; }
 
+/* v3 additions */
+.sep { height: 1px; background: var(--line); margin: 14px 0; }
+.sub { margin-top: 12px; }
+.row-actions.wrap { flex-wrap: wrap; }
+.row-actions.top { margin: 10px 0 4px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: .9rem; margin: 10px 0; }
+.lbl.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.field.mono, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+.table-wrap { overflow-x: auto; }
+.mini-list { margin: 6px 0 0; padding-left: 18px; }
+.mini-list li { font-size: .82rem; color: var(--muted); }
+.notice.small, .notice.info.small { font-size: .82rem; padding: 8px 10px; }
+.pill.ok { background: #e6f6ee; border-color: #b6e2ca; color: var(--ok); }
+
+/* Journal en cartes (adapté téléphone) */
+.journal-list { display: flex; flex-direction: column; gap: 8px; }
+.journal-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff; }
+.journal-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+.journal-action { font-weight: 600; font-size: .92rem; }
+
 /* Toast */
 .toast-host { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 100; }
 .toast { background: var(--ink); color: #fff; padding: 11px 18px; border-radius: 10px; font-size: .9rem; opacity: 0; transform: translateY(10px); transition: .25s; box-shadow: var(--shadow); }

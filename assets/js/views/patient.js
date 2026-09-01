@@ -1,20 +1,18 @@
-// Portail patient : connexion par code (démo), prochains rendez-vous, prise /
-// déplacement / annulation dans les créneaux compatibles, liste de désistement,
-// signalement d'une demande. Le paramètre « rendez-vous à l'avance » agit comme
-// un plafond du nombre total de rendez-vous futurs simultanés.
+// Portail patient. IMPORTANT : aucune règle interne visible (ni fréquence, ni
+// marge, ni ancrage, ni nombre de rdv autorisés). Le patient voit uniquement
+// les créneaux actuellement proposés. Inclut le formulaire de nouvelle demande.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
 import { el, clear, fmtDateTime, fmtDate, fmtTime, toast } from './dom.js';
 
 let currentPatientId = null;
 
-function lastReferenceDate(patientId) {
-  // Dernier rendez-vous effectif (réalisé ou programmé) le plus récent, sinon aujourd'hui.
-  const appts = store.appointmentsOf(patientId)
-    .filter((a) => a.status === 'done' || a.status === 'booked')
-    .map((a) => new Date(a.datetime))
-    .sort((a, b) => b - a);
-  return appts[0] || new Date();
+function proposedSlots(patient) {
+  const now = new Date();
+  const open = store.openSlots({ now });
+  const anchor = rules.resolveAnchor({ appointments: store.appointments(), patientId: patient.id, explicitAnchor: patient.anchorDate }).date;
+  const { slots } = rules.compatibleSlots({ openSlots: open, anchor, cadence: patient.cadence, now });
+  return slots;
 }
 
 function loginView(mount) {
@@ -24,153 +22,19 @@ function loginView(mount) {
   const connect = () => {
     const p = store.patientByCode(input.value);
     if (!p) { toast('Code inconnu.', 'err'); return; }
-    currentPatientId = p.id;
-    render(mount);
+    currentPatientId = p.id; render(mount);
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
-  const card = el('div', { class: 'card narrow' },
+  mount.appendChild(el('div', { class: 'card narrow' },
     el('h2', {}, 'Espace patient'),
     el('p', { class: 'muted' }, 'Cabinet du Dr Mathieu Place — psychiatre.'),
-    el('p', { class: 'muted' }, "Connexion par code d'accès personnel (démonstration)."),
+    el('p', { class: 'muted' }, "Accès par lien sécurisé personnel (démonstration : code d'accès)."),
     input,
     el('button', { class: 'btn btn-primary', onclick: connect }, 'Se connecter'),
+    el('div', { class: 'sep' }),
+    el('p', { class: 'muted small' }, "Vous n'êtes pas encore suivi(e) ?"),
+    el('button', { class: 'btn btn-ghost', onclick: () => newDemandView(mount) }, 'Adresser une nouvelle demande'),
     el('p', { class: 'hint' }, 'Codes de démo : ' + codes),
-  );
-  mount.appendChild(card);
-}
-
-function appointmentRow(mount, a, patient) {
-  const now = new Date();
-  const canChange = new Date(a.datetime) > now;
-  return el('div', { class: 'row-item' },
-    el('div', {},
-      el('div', { class: 'row-title' }, fmtDateTime(a.datetime)),
-      el('div', { class: 'muted small' }, `${a.durationMin} min${a.exception ? ' · exception' : ''}`),
-    ),
-    el('div', { class: 'row-actions' },
-      canChange ? el('button', { class: 'btn btn-ghost', onclick: () => moveView(mount, a, patient) }, 'Déplacer') : null,
-      canChange ? el('button', { class: 'btn btn-ghost danger', onclick: () => {
-        if (!confirm(`Annuler le rendez-vous du ${fmtDateTime(a.datetime)} ?`)) return;
-        store.cancelAppointment(a.id);
-        toast('Rendez-vous annulé.');
-        render(mount);
-      } }, 'Annuler') : null,
-    ),
-  );
-}
-
-function slotGrid(slots, onPick) {
-  if (slots.length === 0) {
-    return el('div', { class: 'empty' }, "Aucun créneau compatible avec votre rythme de suivi pour le moment. Vous pouvez signaler une demande ci-dessous : le médecin décidera s'il faut ouvrir une place.");
-  }
-  const byDay = new Map();
-  for (const s of slots) {
-    const k = fmtDate(s);
-    if (!byDay.has(k)) byDay.set(k, []);
-    byDay.get(k).push(s);
-  }
-  return el('div', { class: 'slot-days' },
-    [...byDay.entries()].map(([day, list]) => el('div', { class: 'slot-day' },
-      el('div', { class: 'slot-day-label' }, day),
-      el('div', { class: 'slot-chips' },
-        list.map((s) => el('button', { class: 'chip', onclick: () => onPick(s) }, fmtTime(s))),
-      ),
-    )),
-  );
-}
-
-function capBanner(patient, future) {
-  const cap = patient.rule.bookAhead;
-  return el('div', { class: 'notice info' },
-    `Vous avez ${future.length} rendez-vous à venir sur un maximum de ${cap}. `
-    + "Pour en reprendre un nouveau, un rendez-vous devra d'abord passer ou être annulé.");
-}
-
-function bookView(mount, patient) {
-  clear(mount);
-  header(mount, patient);
-  const future = store.futureAppointmentsOf(patient.id);
-  if (rules.bookingCapReached(store.appointments(), patient, new Date())) {
-    mount.appendChild(el('div', { class: 'card' },
-      el('h3', {}, 'Prendre un rendez-vous'),
-      capBanner(patient, future),
-      el('div', { class: 'row-actions end' },
-        el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
-      ),
-    ));
-    return;
-  }
-  const ref = lastReferenceDate(patient.id);
-  const { window: win, slots } = rules.compatibleSlots({
-    rule: patient.rule, lastDate: ref, allBooked: store.bookedAppointments(), now: new Date(),
-  });
-  mount.appendChild(el('div', { class: 'card' },
-    el('h3', {}, 'Prendre un rendez-vous'),
-    el('p', { class: 'muted' }, `Ancrage du calcul : dernier rendez-vous du ${fmtDate(ref)}.`),
-    el('p', { class: 'muted' }, `Créneaux proposés entre le ${fmtDate(win.from)} et le ${fmtDate(win.to)} (cible : ${fmtDate(win.target)}), selon votre rythme.`),
-    slotGrid(slots, (s) => {
-      const res = store.bookAppointment(patient.id, s.toISOString(), patient.rule.durationMin);
-      if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
-      toast('Rendez-vous enregistré.');
-      render(mount);
-    }),
-    el('div', { class: 'row-actions end' },
-      el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
-    ),
-  ));
-}
-
-function moveView(mount, appointment, patient) {
-  clear(mount);
-  const patientAppts = store.appointmentsOf(patient.id);
-  const others = patientAppts.filter((a) => a.status === 'booked' && a.id !== appointment.id)
-    .map((a) => new Date(a.datetime)).sort((a, b) => a - b);
-  const nd = new Date(appointment.datetime);
-  const prev = others.filter((d) => d < nd).pop();
-  const ref = prev || lastReferenceDate(patient.id);
-  const { slots } = rules.compatibleSlots({
-    rule: patient.rule, lastDate: ref, allBooked: store.bookedAppointments(),
-    now: new Date(), excludeAppointmentId: appointment.id,
-  });
-  header(mount, patient);
-  mount.appendChild(el('div', { class: 'card' },
-    el('h3', {}, 'Déplacer le rendez-vous'),
-    el('p', { class: 'muted' }, `Actuellement : ${fmtDateTime(appointment.datetime)}. Nouveau créneau (dans la fourchette cohérente) :`),
-    slotGrid(slots, (s) => {
-      const check = rules.validateMove({
-        rule: patient.rule, appointment, newDate: s,
-        patientAppointments: patientAppts, allBooked: store.bookedAppointments(), now: new Date(),
-      });
-      if (!check.ok) { toast(check.reason, 'err'); return; }
-      store.moveAppointment(appointment.id, s.toISOString());
-      toast('Rendez-vous déplacé.');
-      render(mount);
-    }),
-    el('div', { class: 'row-actions end' },
-      el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
-    ),
-  ));
-}
-
-function requestView(mount, patient) {
-  clear(mount);
-  const typeSel = el('select', { class: 'field' },
-    store.REQUEST_TYPES.map((t) => el('option', { value: t.id }, t.label)));
-  const note = el('textarea', { class: 'field', rows: '3', placeholder: "Votre message (visible uniquement dans l'espace sécurisé du médecin, jamais par e-mail)." });
-  header(mount, patient);
-  mount.appendChild(el('div', { class: 'card' },
-    el('h3', {}, 'Signaler une demande'),
-    el('p', { class: 'muted' }, 'Le médecin recevra une notification neutre (sans contenu). Il consultera votre message dans son espace sécurisé.'),
-    el('label', { class: 'lbl' }, 'Type de demande'), typeSel,
-    el('label', { class: 'lbl' }, 'Message (optionnel)'), note,
-    el('div', { class: 'row-actions end' },
-      el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
-      el('button', { class: 'btn btn-primary', onclick: () => {
-        store.addRequest(patient.id, typeSel.value, note.value);
-        toast('Demande envoyée. Le médecin a été notifié.');
-        render(mount);
-      } }, 'Envoyer la demande'),
-    ),
   ));
 }
 
@@ -181,33 +45,150 @@ function header(mount, patient) {
   ));
 }
 
+function slotGrid(slots, onPick) {
+  if (slots.length === 0) {
+    return el('div', { class: 'empty' },
+      "Aucun créneau ne vous est proposé actuellement. Vous pouvez vous inscrire sur la liste de désistement, ou signaler une demande : le cabinet reviendra vers vous.");
+  }
+  const byDay = new Map();
+  for (const s of slots) { const k = fmtDate(s); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(s); }
+  return el('div', { class: 'slot-days' },
+    [...byDay.entries()].map(([day, list]) => el('div', { class: 'slot-day' },
+      el('div', { class: 'slot-day-label' }, day),
+      el('div', { class: 'slot-chips' }, list.map((s) => el('button', { class: 'chip', onclick: () => onPick(s) }, fmtTime(s)))),
+    )),
+  );
+}
+
+function bookView(mount, patient) {
+  clear(mount); header(mount, patient);
+  const slots = proposedSlots(patient);
+  // Aucune mention de cadence/fenêtre/ancrage : on n'affiche QUE les créneaux.
+  mount.appendChild(el('div', { class: 'card' },
+    el('h3', {}, 'Choisir un rendez-vous'),
+    el('p', { class: 'muted' }, 'Voici les créneaux qui vous sont proposés.'),
+    slotGrid(slots, (s) => {
+      const res = store.bookAppointment(patient.id, s.toISOString(), { actor: 'patient' });
+      if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
+      toast('Rendez-vous enregistré.'); render(mount);
+    }),
+    el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour')),
+  ));
+}
+
+function moveView(mount, appointment, patient) {
+  clear(mount); header(mount, patient);
+  const now = new Date();
+  const open = store.openSlots({ now });
+  // Déplacement : mêmes créneaux proposés que la prise, sans révéler la logique.
+  const slots = proposedSlots(patient);
+  mount.appendChild(el('div', { class: 'card' },
+    el('h3', {}, 'Déplacer le rendez-vous'),
+    el('p', { class: 'muted' }, `Actuellement : ${fmtDateTime(appointment.datetime)}.`),
+    slotGrid(slots, (s) => {
+      const check = rules.validateMove({ openSlots: open, newDate: s, now });
+      if (!check.ok) { toast(check.reason, 'err'); return; }
+      const res = store.moveAppointment(appointment.id, s.toISOString(), { actor: 'patient' });
+      if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
+      toast('Rendez-vous déplacé.'); render(mount);
+    }),
+    el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour')),
+  ));
+}
+
+function requestView(mount, patient) {
+  clear(mount); header(mount, patient);
+  const typeSel = el('select', { class: 'field' }, store.REQUEST_TYPES.map((t) => el('option', { value: t.id }, t.label)));
+  const note = el('textarea', { class: 'field', rows: '3', placeholder: "Votre message (visible uniquement dans l'espace sécurisé du médecin, jamais par e-mail)." });
+  mount.appendChild(el('div', { class: 'card' },
+    el('h3', {}, 'Signaler une demande'),
+    el('p', { class: 'muted' }, 'Le médecin recevra une notification neutre (sans contenu). Il consultera votre message dans son espace sécurisé.'),
+    el('label', { class: 'lbl' }, 'Type de demande'), typeSel,
+    el('label', { class: 'lbl' }, 'Message (optionnel)'), note,
+    el('div', { class: 'row-actions end' },
+      el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
+      el('button', { class: 'btn btn-primary', onclick: () => {
+        store.addRequest(patient.id, typeSel.value, note.value);
+        toast('Demande envoyée. Le médecin a été notifié.'); render(mount);
+      } }, 'Envoyer la demande'),
+    ),
+  ));
+}
+
+function appointmentRow(mount, a, patient) {
+  const canChange = new Date(a.datetime) > new Date();
+  return el('div', { class: 'row-item' },
+    el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime)),
+      el('div', { class: 'muted small' }, `${a.durationMin} min`)),
+    el('div', { class: 'row-actions' },
+      canChange ? el('button', { class: 'btn btn-ghost', onclick: () => moveView(mount, a, patient) }, 'Déplacer') : null,
+      canChange ? el('button', { class: 'btn btn-ghost danger', onclick: () => {
+        if (!confirm(`Annuler le rendez-vous du ${fmtDateTime(a.datetime)} ?`)) return;
+        store.cancelAppointment(a.id, { actor: 'patient' }); toast('Rendez-vous annulé.'); render(mount);
+      } }, 'Annuler') : null,
+    ),
+  );
+}
+
+// --- Formulaire de nouvelle demande (choix fermés + zone libre) ---
+function newDemandView(mount) {
+  clear(mount);
+  mount.appendChild(el('div', { class: 'space-head' },
+    el('div', {}, el('h2', {}, 'Nouvelle demande'), el('p', { class: 'muted' }, 'Cabinet du Dr Mathieu Place')),
+    el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
+  ));
+  const circuitSel = el('select', { class: 'field' }, store.circuits().map((c) => el('option', { value: c.id }, c.label)));
+  const origineSel = el('select', { class: 'field' },
+    el('option', { value: 'personnelle' }, 'Démarche personnelle'),
+    el('option', { value: 'adresse' }, 'Adressé(e) par un professionnel'));
+  const objectif = el('textarea', { class: 'field', rows: '2', placeholder: 'Objectif de la demande' });
+  const adressePar = el('input', { class: 'field', placeholder: 'Professionnel qui adresse (si applicable)' });
+  const relais = el('input', { class: 'field', placeholder: 'Relais prescripteur éventuel (médecin traitant, psychiatre…)' });
+  const dispos = el('input', { class: 'field', placeholder: 'Vos disponibilités générales' });
+  const note = el('textarea', { class: 'field', rows: '3', placeholder: 'Zone libre (facultatif)' });
+  const ack = el('input', { type: 'checkbox' });
+
+  mount.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'notice' }, "Le dépôt d'une demande ne garantit ni acceptation, ni rendez-vous, ni délai, ni ouverture d'un suivi régulier. Ce dispositif ne remplace pas les services d'urgence (112)."),
+    el('label', { class: 'lbl' }, 'Circuit demandé'), circuitSel,
+    el('label', { class: 'lbl' }, 'Origine de la démarche'), origineSel,
+    el('label', { class: 'lbl' }, 'Objectif'), objectif,
+    el('label', { class: 'lbl' }, 'Adressé(e) par'), adressePar,
+    el('label', { class: 'lbl' }, 'Relais prescripteur éventuel'), relais,
+    el('label', { class: 'lbl' }, 'Disponibilités'), dispos,
+    el('label', { class: 'lbl' }, 'Précisions libres'), note,
+    el('label', { class: 'check' }, ack, ' J\'ai pris connaissance des limites du dispositif.'),
+    el('div', { class: 'row-actions end' },
+      el('button', { class: 'btn btn-primary', onclick: () => {
+        if (!ack.checked) { toast('Merci de valider la prise de connaissance des limites.', 'err'); return; }
+        store.submitDemand({
+          circuitId: circuitSel.value, origine: origineSel.value, objectif: objectif.value,
+          adressePar: adressePar.value, relais: relais.value, dispos: dispos.value,
+          note: note.value, ackLimites: true,
+        });
+        toast('Demande transmise. Le médecin l\'examinera.'); render(mount);
+      } }, 'Transmettre la demande'),
+    ),
+  ));
+}
+
 function render(mount) {
   clear(mount);
   if (!currentPatientId) { loginView(mount); return; }
   const patient = store.patientById(currentPatientId);
   if (!patient) { currentPatientId = null; loginView(mount); return; }
+  store.purgeWaitlist();
   header(mount, patient);
 
-  const upcoming = store.appointmentsOf(patient.id)
-    .filter((a) => a.status === 'booked')
+  const upcoming = store.appointmentsOf(patient.id).filter((a) => a.status === 'planifie')
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  const future = store.futureAppointmentsOf(patient.id);
-  const capReached = rules.bookingCapReached(store.appointments(), patient, new Date());
   const onWaitlist = store.waitlist().some((w) => w.patientId === patient.id);
-
-  const bookBtn = el('button', {
-    class: 'btn btn-primary', disabled: capReached ? '' : null,
-    title: capReached ? `Plafond de ${patient.rule.bookAhead} rendez-vous à venir atteint.` : null,
-    onclick: () => bookView(mount, patient),
-  }, '+ Prendre un rendez-vous');
 
   mount.appendChild(el('div', { class: 'card' },
     el('div', { class: 'card-head' },
       el('h3', {}, 'Mes rendez-vous'),
-      bookBtn,
+      el('button', { class: 'btn btn-primary', onclick: () => bookView(mount, patient) }, '+ Choisir un rendez-vous'),
     ),
-    el('p', { class: 'muted small' }, `${future.length} rendez-vous à venir · plafond : ${patient.rule.bookAhead}`),
-    capReached ? capBanner(patient, future) : null,
     upcoming.length ? el('div', { class: 'list' }, upcoming.map((a) => appointmentRow(mount, a, patient)))
       : el('div', { class: 'empty' }, 'Aucun rendez-vous à venir.'),
   ));
@@ -216,15 +197,14 @@ function render(mount) {
     el('div', { class: 'card-head' }, el('h3', {}, 'Autres actions')),
     el('div', { class: 'action-grid' },
       el('button', { class: 'btn btn-tile', onclick: () => requestView(mount, patient) },
-        el('strong', {}, 'Signaler une demande'),
-        el('span', { class: 'muted small' }, 'Parler, ordonnance, rapport…')),
+        el('strong', {}, 'Signaler une demande'), el('span', { class: 'muted small' }, 'Parler, ordonnance, rapport…')),
       el('button', { class: 'btn btn-tile', onclick: () => {
         if (onWaitlist) { store.leaveWaitlist(patient.id); toast('Retiré de la liste de désistement.'); }
-        else { store.joinWaitlist(patient.id); toast('Inscrit sur la liste de désistement.'); }
+        else { store.joinWaitlist(patient.id, { actor: 'patient' }); toast('Inscrit sur la liste de désistement.'); }
         render(mount);
       } },
         el('strong', {}, onWaitlist ? 'Quitter la liste de désistement' : 'Liste de désistement'),
-        el('span', { class: 'muted small' }, "Être prévenu si un créneau plus tôt se libère")),
+        el('span', { class: 'muted small' }, 'Avancer votre prochain rendez-vous si une place se libère')),
     ),
   ));
 
