@@ -798,7 +798,7 @@ function journalTab(mount) {
 
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' }, el('h3', {}, 'Journal des opérations'),
-      el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); } }, 'Exporter CSV')),
+      el('button', { class: 'btn btn-ghost', onclick: () => confirmPersonalData("L'export du journal", () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); }) }, 'Exporter CSV')),
     el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Recherche'), search, el('label', { class: 'lbl' }, 'Acteur'), actorSel),
     slice.length ? el('div', { class: 'journal-list' }, slice.map((e) => el('div', { class: 'journal-item' },
       el('div', { class: 'journal-top' }, el('span', { class: 'pill' }, e.actor), el('span', { class: 'muted small' }, fmtDateTime(e.ts))),
