@@ -26,8 +26,12 @@ export function buildSeed(now = new Date()) {
     emergencyTemplate: {
       4: ['12:15'],                                                                  // jeudi urgence, invisible au public
     },
+    protectedTemplate: {
+      2: ['16:00'],                                                                  // mardi 16:00 : créneau protégé (réservé à certains usages), non public
+    },
     closures: [],                                                                    // congés/fermetures datées
     avisCapacity: { windowDays: 28, target: 8, min: 8, max: 10 },                    // ~8 séances / 4 semaines (8-10)
+    notifyConfig: { onComment: true, remindersJ2: true, remindersJ1: true },         // notifications neutres configurables
   };
 
   // --- Circuits (avis / parcours ciblés) ---
@@ -55,6 +59,16 @@ export function buildSeed(now = new Date()) {
       anchorDate: null,
       cadence: { mode: 'cadence', frequencyDays: 42, marginDays: 7, horizonWeeks: 12, maxFuture: 1 },
     },
+    {
+      id: 'p-david', code: 'DAVID-2026', displayName: 'Patient D. (démo)', email: 'david@example.test',
+      anchorDate: null, // nouveau suivi : aucun rdv effectué -> tout l'horizon ouvert
+      cadence: { mode: 'cadence', frequencyDays: 28, marginDays: 4, horizonWeeks: 12, maxFuture: 1 },
+    },
+    {
+      id: 'p-elodie', code: 'ELODIE-2026', displayName: 'Patient E. (démo)', email: 'elodie@example.test',
+      anchorDate: null,
+      cadence: { mode: 'fourchette', minDays: 7, maxDays: 14, marginDays: 1, horizonWeeks: 12, maxFuture: 3 },
+    },
   ];
 
   // --- Rendez-vous : au moins un EFFECTUÉ (ancrage) par patient, tous 45 min ---
@@ -62,6 +76,7 @@ export function buildSeed(now = new Date()) {
     { id: 'a1', patientId: 'p-anne', datetime: iso(at(now, -20, '13:00')), durationMin: 45, status: 'effectue' },
     { id: 'a2', patientId: 'p-bruno', datetime: iso(at(now, -12, '14:30')), durationMin: 45, status: 'effectue' },
     { id: 'a3', patientId: 'p-clara', datetime: iso(at(now, -40, '10:00')), durationMin: 45, status: 'effectue' },
+    { id: 'a5', patientId: 'p-elodie', datetime: iso(at(now, -8, '09:15')), durationMin: 45, status: 'effectue' },
   ];
 
   // --- Faux CSV Mobminder (rdv futurs à migrer) : texte brut pour la démo ---
@@ -84,7 +99,7 @@ export function buildSeed(now = new Date()) {
     { ts: iso(new Date(now.getTime() - 5 * 60000)), actor: 'systeme', action: 'seed', detail: 'Jeu de démonstration initialisé.' },
   ];
 
-  return { doctor, circuits, patients, appointments, requests, demands, waitlist, offers, migrations, log, fakeCsv, version: 3 };
+  return { doctor, circuits, patients, appointments, requests, demands, waitlist, offers, migrations, log, fakeCsv, version: 4 };
 }
 
 function ymdPlus(now, days) {

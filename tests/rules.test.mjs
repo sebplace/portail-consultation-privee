@@ -170,4 +170,19 @@ test('appointmentsInClosure: liste les rdv planifiés tombant dans la fermeture'
   assert.equal(list[0].id, 'z1');
 });
 
+test('generateOpenSlots: créneau protégé exclu du public, visible si includeProtected', () => {
+  const doc2 = { ...doctor, protectedTemplate: { 2: ['16:00'] } };
+  const to = addDays(NOW, 8);
+  const pub = generateOpenSlots({ doctor: doc2, appointments: [], from: NOW, to, now: NOW });
+  assert.ok(!pub.some((s) => isoWeekday(s.start) === 2 && s.time === '16:00'), 'protégé absent du public');
+  const withP = generateOpenSlots({ doctor: doc2, appointments: [], from: NOW, to, now: NOW, includeProtected: true });
+  assert.ok(withP.some((s) => s.time === '16:00' && s.protected), 'protégé visible en mode protégé');
+});
+
+test('isClosed: fermeture demi-journée (ISO) ne bloque que la plage horaire', () => {
+  const closures = [{ from: '2026-01-08T08:00:00', to: '2026-01-08T12:00:00', label: 'matinée' }];
+  assert.equal(isClosed(atTime(new Date(2026, 0, 8), '09:15'), closures), true, 'matin fermé');
+  assert.equal(isClosed(atTime(new Date(2026, 0, 8), '14:30'), closures), false, 'après-midi ouvert');
+});
+
 console.log(`\n${passed} test(s) réussi(s).`);

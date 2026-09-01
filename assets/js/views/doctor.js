@@ -1,11 +1,11 @@
-// Tableau de bord médecin. Onglets : Agenda, À traiter, Files, Règles patients,
-// Disponibilité, Migration, Journal, E-mails.
+// Tableau de bord médecin. Onglets : Accueil, Agenda, À traiter, Files, Règles,
+// Disponibilité, Migration, Journal, E-mails, Réglages.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
 import * as avail from '../core/availability.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayLabel, toast } from './dom.js';
+import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayLabel, weekdayShort, toast, modal, confirmDialog, downloadText } from './dom.js';
 
-let tab = 'agenda';
+let tab = 'accueil';
 
 function labelFor(a) {
   const p = store.patientById(a.patientId);
@@ -14,12 +14,13 @@ function labelFor(a) {
   if (d) return `Demande — ${store.circuitById(d.circuitId)?.label || 'circuit'}`;
   return a.patientId;
 }
+function statusTag(status) { return el('span', { class: 'st st-' + status }, store.STATUS_LABEL[status] || status); }
 
 function tabs(mount) {
   const items = [
-    ['agenda', 'Agenda'], ['intervention', 'À traiter'], ['files', 'Files'],
-    ['regles', 'Règles patients'], ['dispo', 'Disponibilité'], ['migration', 'Migration'],
-    ['journal', 'Journal'], ['emails', 'E-mails'],
+    ['accueil', 'Accueil'], ['agenda', 'Agenda'], ['intervention', 'À traiter'], ['files', 'Files'],
+    ['regles', 'Règles'], ['dispo', 'Disponibilité'], ['migration', 'Migration'],
+    ['journal', 'Journal'], ['emails', 'E-mails'], ['reglages', 'Réglages'],
   ];
   const openReq = store.openRequests().length;
   const newDem = store.demands().filter((d) => d.status === 'deposee').length;
@@ -32,20 +33,89 @@ function tabs(mount) {
   }));
 }
 
+// --- ACCUEIL : synthèse + recherche + jauges + rappels simulés ---
+function accueilTab(mount) {
+  const s = store.stats();
+  const summary = el('div', { class: 'summary-grid' },
+    tile(s.requestsOpen, 'Demandes à traiter', () => { tab = 'intervention'; render(mount); }),
+    tile(s.demandsOpen, 'Nouvelles demandes', () => { tab = 'files'; render(mount); }),
+    tile(s.waitlist, 'Désistements actifs', () => { tab = 'files'; render(mount); }),
+    tile(s.upcoming, 'RDV à venir', () => { tab = 'agenda'; render(mount); }),
+  );
+
+  const occ = el('div', { class: 'card' },
+    el('h3', {}, 'Occupation (4 prochaines semaines)'),
+    gauge(s.occupancy, false),
+    el('div', { class: 'muted small' }, `${s.occupancy}% des créneaux ouverts sont réservés.`),
+    el('h3', { style: 'margin-top:14px' }, "Capacité avis / parcours (4 semaines)"),
+    gauge(Math.round((s.avisNext / s.avisCapacity.max) * 100), s.avisNext > s.avisCapacity.max),
+    el('div', { class: 'muted small' }, `${s.avisNext} séance(s) d'avis planifiée(s) sur un maximum de ${s.avisCapacity.max} (cible ${s.avisCapacity.target}).`),
+  );
+
+  const nextClosure = (store.doctor().closures || []).map((c) => c).sort((a, b) => new Date(a.from) - new Date(b.from))[0];
+  const reminders = store.simulateReminders();
+
+  const misc = el('div', { class: 'card' },
+    el('h3', {}, 'À noter'),
+    el('div', { class: 'list' },
+      el('div', { class: 'row-item' }, el('div', {}, el('div', { class: 'row-title' }, 'Prochaine fermeture'), el('div', { class: 'muted small' }, nextClosure ? `${fmtDate(nextClosure.from)} → ${fmtDate(nextClosure.to)} · ${nextClosure.label}` : 'Aucune'))),
+      el('div', { class: 'row-item' }, el('div', {}, el('div', { class: 'row-title' }, 'Rappels neutres à envoyer (simulés)'), el('div', { class: 'muted small' }, reminders.length ? `${reminders.length} rappel(s) J-2/J-1` : 'Aucun pour l\'instant'))),
+    ),
+  );
+
+  return el('div', {}, searchCard(mount), summary, occ, misc);
+}
+function tile(num, label, onclick) {
+  return el('button', { class: 'summary-tile', onclick }, el('div', { class: 'summary-num' }, String(num)), el('div', { class: 'summary-lbl' }, label));
+}
+function gauge(pct, over) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return el('div', { class: 'gauge' + (over ? ' over' : '') }, el('span', { style: `width:${p}%` }));
+}
+
+function searchCard(mount) {
+  const input = el('input', { class: 'field', placeholder: 'Rechercher un patient (nom ou code)', 'aria-label': 'Recherche patient' });
+  const results = el('div', {});
+  const run = () => {
+    clear(results);
+    const q = (input.value || '').trim().toLowerCase();
+    if (!q) return;
+    const found = store.patients().filter((p) => p.displayName.toLowerCase().includes(q) || p.code.toLowerCase().includes(q));
+    if (!found.length) { results.appendChild(el('div', { class: 'empty' }, 'Aucun résultat.')); return; }
+    results.appendChild(el('div', { class: 'list' }, found.map((p) => el('div', { class: 'row-item' },
+      el('div', {}, el('div', { class: 'row-title' }, p.displayName), el('div', { class: 'muted small' }, `code ${p.code}`)),
+      el('button', { class: 'btn btn-ghost', onclick: () => patientFiche(mount, p) }, 'Fiche'),
+    ))));
+  };
+  input.addEventListener('input', run);
+  return el('div', { class: 'card' }, el('h3', {}, 'Recherche'), input, results);
+}
+
+// Fiche patient consolidée (historique complet) en modale.
+function patientFiche(mount, p) {
+  const appts = store.appointmentsOf(p.id).sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+  const anchor = rules.resolveAnchor({ appointments: store.appointments(), patientId: p.id, explicitAnchor: p.anchorDate });
+  const body = [
+    el('div', { class: 'muted small' }, `code ${p.code} · ancrage : ${anchor.date ? fmtDate(anchor.date) : '—'} (${anchor.source})`),
+    el('div', { class: 'sep' }),
+    el('div', { class: 'list' }, appts.length ? appts.map((a) => el('div', { class: 'row-item' },
+      el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime)), el('div', { class: 'muted small' }, `${a.durationMin} min${a.circuitInstanceId ? ' · parcours' : ''}${a.emergency ? ' · urgence' : ''}`)),
+      statusTag(a.status),
+    )) : [el('div', { class: 'empty' }, 'Aucun rendez-vous.')]),
+  ];
+  modal(`Fiche — ${p.displayName}`, body, [el('button', { class: 'btn btn-primary', onclick: () => document.querySelector('.modal-back')?.remove() }, 'Fermer')]);
+}
+
 // --- AGENDA ---
 function agendaTab(mount) {
   const now = new Date();
-  const appts = store.appointments().filter((a) => a.status === 'planifie')
-    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  const recent = store.appointments().filter((a) => ['effectue', 'annule', 'absent', 'deplace'].includes(a.status))
-    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime)).slice(0, 10);
-
+  const appts = store.appointments().filter((a) => a.status === 'planifie').sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const recent = store.appointments().filter((a) => ['effectue', 'annule', 'absent', 'deplace'].includes(a.status)).sort((a, b) => new Date(b.datetime) - new Date(a.datetime)).slice(0, 10);
   const statusPicker = (a) => {
     const sel = el('select', { class: 'field mini' }, store.STATUSES.map((s) => el('option', { value: s, selected: s === a.status ? '' : null }, store.STATUS_LABEL[s])));
     sel.addEventListener('change', () => { store.setStatus(a.id, sel.value, { actor: 'medecin' }); toast('Statut mis à jour.'); render(mount); });
     return sel;
   };
-
   return el('div', {},
     el('div', { class: 'card' },
       el('h3', {}, 'Rendez-vous planifiés'),
@@ -56,21 +126,30 @@ function agendaTab(mount) {
         el('div', { class: 'row-actions wrap' },
           el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'effectue', { actor: 'medecin' }); toast('Effectué.'); render(mount); } }, 'Effectué'),
           el('button', { class: 'btn btn-ghost', onclick: () => { store.setStatus(a.id, 'absent', { actor: 'medecin' }); toast('Absent.'); render(mount); } }, 'Absent'),
-          el('button', { class: 'btn btn-ghost danger', onclick: () => { if (confirm('Annuler ?')) { store.cancelAppointment(a.id, { actor: 'medecin' }); render(mount); } } }, 'Annuler'),
+          el('button', { class: 'btn btn-ghost danger', onclick: () => cancelWithReason(mount, a) }, 'Annuler'),
         ),
       ))) : el('div', { class: 'empty' }, 'Aucun rendez-vous planifié.'),
     ),
     el('div', { class: 'card' },
       el('h3', {}, 'Historique récent'),
       recent.length ? el('div', { class: 'list' }, recent.map((a) => el('div', { class: 'row-item' },
-        el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime)), el('div', { class: 'muted small' }, labelFor(a))),
+        el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(a.datetime)), el('div', { class: 'muted small' }, labelFor(a) + (a.cancelReason ? ' · ' + a.cancelReason : ''))),
         el('div', {}, statusPicker(a)),
       ))) : el('div', { class: 'empty' }, 'Rien pour le moment.'),
     ),
   );
 }
 
-// --- À TRAITER (demandes explicites + fermetures impactantes) ---
+function cancelWithReason(mount, a) {
+  const reason = el('input', { class: 'field', placeholder: 'Motif (optionnel)' });
+  const note = el('textarea', { class: 'field', rows: '2', placeholder: 'Note interne (optionnelle)' });
+  const m = modal(`Annuler — ${fmtDateTime(a.datetime)}`, [el('label', { class: 'lbl' }, 'Motif'), reason, el('label', { class: 'lbl' }, 'Note interne'), note], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Retour'),
+    el('button', { class: 'btn btn-ghost danger', onclick: () => { store.cancelAppointment(a.id, { actor: 'medecin', reason: [reason.value, note.value].filter(Boolean).join(' — ') }); m.close(); toast('Rendez-vous annulé.'); render(mount); } }, 'Confirmer l\'annulation'),
+  ]);
+}
+
+// --- À TRAITER ---
 function interventionTab(mount) {
   const open = store.openRequests();
   const typeLabel = (id) => (store.REQUEST_TYPES.find((t) => t.id === id) || {}).label || id;
@@ -84,104 +163,115 @@ function interventionTab(mount) {
         r.note ? el('div', { class: 'note-box' }, r.note) : el('div', { class: 'muted small' }, '(pas de message)'),
       ),
       el('div', { class: 'row-actions wrap' },
-        el('button', { class: 'btn btn-ghost', onclick: () => { store.approveException(r.patientId, prompt('Date/heure ISO exception (ex. 2026-09-10T12:15) :') || new Date().toISOString()); toast('Exception créée.'); render(mount); } }, 'Exception'),
         el('button', { class: 'btn btn-primary', onclick: () => { store.resolveRequest(r.id); toast('Demande traitée.'); render(mount); } }, 'Marquer traitée'),
       ),
     ))) : el('div', { class: 'empty' }, 'Rien à traiter. Tout est à jour.'),
   );
 }
 
-// --- FILES (désistement + avis/parcours) ---
+// --- FILES ---
 function filesTab(mount) {
   const now = new Date();
-  // Désistement
-  store.purgeWaitlist(now);
+  store.purgeWaitlist(now); store.processOffers(now);
   const wl = store.waitlist().map((w) => ({ w, p: store.patientById(w.patientId) }));
   const offers = store.offers().filter((o) => o.status === 'en cours');
-  // Avis / parcours
   const demands = [...store.demands()].sort((a, b) => (a.priority || 0) - (b.priority || 0));
+
+  const prefLabel = (pr) => {
+    if (!pr) return '';
+    const days = pr.weekdays && pr.weekdays.length ? pr.weekdays.map(weekdayShort).join('/') : 'tous jours';
+    const h = (pr.timeFrom || pr.timeTo) ? ` ${pr.timeFrom || ''}-${pr.timeTo || ''}` : '';
+    return `${days}${h} · délai ${pr.minDelayHours ?? 24}h`;
+  };
 
   const desistement = el('div', { class: 'card' },
     el('h3', {}, 'Liste de désistement'),
-    el('p', { class: 'muted small' }, "Personnes déjà suivies souhaitant avancer leur prochain rendez-vous. L'inscription expire au prochain rendez-vous. Offre successive 48h."),
+    el('p', { class: 'muted small' }, "Personnes déjà suivies souhaitant avancer leur prochain rendez-vous. Expiration au prochain rendez-vous. Offre successive 48h avec relance automatique."),
     wl.length ? el('div', { class: 'list' }, wl.map(({ w, p }) => el('div', { class: 'row-item' },
       el('div', {}, el('div', { class: 'row-title' }, p ? p.displayName : w.patientId),
-        el('div', { class: 'muted small' }, `inscrit le ${fmtDate(w.createdAt)}${w.expiresAt ? ` · expire au ${fmtDate(w.expiresAt)}` : ''}`)),
+        el('div', { class: 'muted small' }, `${prefLabel(w.prefs)}${w.expiresAt ? ` · expire ${fmtDate(w.expiresAt)}` : ''}`)),
     ))) : el('div', { class: 'empty' }, 'Personne inscrite.'),
     el('div', { class: 'row-actions end' },
       el('button', { class: 'btn btn-ghost', onclick: () => {
         const open = store.openSlots({ now });
         if (!open.length) { toast('Aucun créneau ouvert à proposer.', 'err'); return; }
         const res = store.offerFreedSlot(open[0].start.toISOString(), { now });
-        if (res && res.error) { toast(res.message, 'err'); } else { toast('Place proposée (48h) à la 1re personne compatible.'); }
+        if (res && res.error) toast(res.message, 'err'); else toast('Place proposée (48h) à la 1re personne compatible.');
         render(mount);
       } }, 'Simuler une place libérée'),
     ),
-    offers.length ? el('div', { class: 'sub' },
-      el('div', { class: 'muted small' }, 'Offres en cours :'),
+    offers.length ? el('div', { class: 'sub' }, el('div', { class: 'muted small' }, 'Offres en cours :'),
       el('div', { class: 'list' }, offers.map((o) => el('div', { class: 'row-item' },
         el('div', {}, el('div', { class: 'row-title' }, `${store.patientById(o.patientId)?.displayName || o.patientId} — ${fmtDateTime(o.datetime)}`),
-          el('div', { class: 'muted small' }, `expire ${fmtDateTime(o.expiresAt)}`)),
-      ))),
-    ) : null,
+          el('div', { class: 'muted small' }, `expire ${fmtDateTime(o.expiresAt)} · position ${o.position + 1}/${o.order.length}`)),
+        el('button', { class: 'btn btn-ghost', onclick: () => { store.advanceOffer(o.id, { reason: 'relance manuelle' }); toast('Relance à la personne suivante.'); render(mount); } }, 'Relancer'),
+      )))) : null,
   );
 
-  const statusPill = (d) => el('span', { class: 'pill' + (d.status.startsWith('accept') ? ' warn' : '') }, store.DEMAND_STATUSES[d.status] || d.status);
-
   const avisFile = el('div', { class: 'card' },
-    el('h3', {}, 'File d\'avis et de parcours ciblés'),
+    el('h3', {}, "File d'avis et de parcours ciblés"),
     el('p', { class: 'muted small' }, "Nouvelles demandes. J'examine humainement ; entrée en file après acceptation. Ordre par ancienneté, priorité modifiable."),
     demands.length ? el('div', { class: 'list' }, demands.map((d) => demandRow(mount, d))) : el('div', { class: 'empty' }, 'Aucune demande.'),
   );
-
   return el('div', {}, desistement, avisFile);
 }
 
 function demandRow(mount, d) {
   const c = store.circuitById(d.circuitId);
-  const now = new Date();
   const actions = [];
   if (d.status === 'deposee') {
     actions.push(el('button', { class: 'btn btn-primary', onclick: () => { const r = store.acceptDemand(d.id); toast(r.status === 'acceptee-conditionnelle' ? 'Acceptée (relais en attente).' : 'Acceptée.'); render(mount); } }, 'Accepter'));
     actions.push(el('button', { class: 'btn btn-ghost danger', onclick: () => { store.refuseDemand(d.id); toast('Refusée.'); render(mount); } }, 'Refuser'));
   }
   if (d.status === 'acceptee-conditionnelle') {
-    actions.push(el('button', { class: 'btn btn-ghost', onclick: () => { const v = prompt('Relais prescripteur identifié :'); if (v) { store.setRelay(d.id, v); toast('Relais enregistré.'); render(mount); } } }, 'Identifier le relais'));
+    actions.push(el('button', { class: 'btn btn-ghost', onclick: () => relayModal(mount, d) }, 'Identifier le relais'));
   }
-  if (d.status === 'acceptee') {
-    actions.push(el('button', { class: 'btn btn-primary', onclick: () => startCircuit(mount, d) }, 'Démarrer le parcours (atomique)'));
-  }
-  // priorité
-  const prio = el('input', { class: 'field mini', type: 'number', value: String(d.priority || 0), title: 'Priorité (plus petit = plus prioritaire)' });
+  if (d.status === 'acceptee') actions.push(el('button', { class: 'btn btn-primary', onclick: () => startCircuit(mount, d) }, 'Démarrer (atomique)'));
+  const prio = el('input', { class: 'field mini', type: 'number', value: String(d.priority || 0), title: 'Priorité' });
   prio.addEventListener('change', () => { store.setPriority(d.id, prio.value); toast('Priorité mise à jour.'); });
-
   return el('div', { class: 'row-item stack' },
     el('div', {},
-      el('div', { class: 'row-title' }, `${c ? c.label : d.circuitId} `, el('span', { class: 'pill' }, store.DEMAND_STATUSES[d.status] || d.status)),
+      el('div', { class: 'row-title' }, `${c ? c.label : d.circuitId} `, el('span', { class: 'pill' + (String(d.status).startsWith('accept') ? ' warn' : '') }, store.DEMAND_STATUSES[d.status] || d.status), `  réf. `, el('span', { class: 'ref-code' }, d.id.slice(-6).toUpperCase())),
       el('div', { class: 'muted small' }, `déposée ${fmtDate(d.createdAt)} · origine ${d.origine}${d.adressePar ? ' · adressé par ' + d.adressePar : ''}${c && c.needsRelay ? ` · relais : ${d.relais || 'à identifier'}` : ''}`),
       d.objectif ? el('div', { class: 'muted small' }, 'Objectif : ' + d.objectif) : null,
-      (c && c.needsRelay && !d.relais) ? el('div', { class: 'notice info small' }, 'Adaptation médicamenteuse impossible tant que le relais prescripteur n\'est pas identifié.') : null,
+      (c && c.needsRelay && !d.relais) ? el('div', { class: 'notice info small' }, "Adaptation médicamenteuse impossible tant que le relais prescripteur n'est pas identifié.") : null,
     ),
     el('div', { class: 'row-actions wrap' }, ...actions, (d.status !== 'refusee' && d.status !== 'close') ? el('label', { class: 'lbl inline' }, 'Priorité', prio) : null),
   );
+}
+
+function relayModal(mount, d) {
+  const input = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom)' });
+  const m = modal('Identifier le relais prescripteur', [input], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { if (!input.value) { toast('Saisissez un relais.', 'err'); return; } store.setRelay(d.id, input.value); m.close(); toast('Relais enregistré.'); render(mount); } }, 'Enregistrer'),
+  ]);
 }
 
 function startCircuit(mount, d) {
   const c = store.circuitById(d.circuitId);
   const now = new Date();
   const open = store.openSlots({ now });
-  const count = c.initialSessions;
-  const serie = rules.proposeSeries({ openSlots: open, count, spacingDays: c.spacingDays, marginDays: 6, now });
-  if (!serie) { toast(`Série de ${count} non garantie sur l'horizon — parcours non démarré.`, 'err'); return; }
+  const serie = rules.proposeSeries({ openSlots: open, count: c.initialSessions, spacingDays: c.spacingDays, marginDays: 6, now });
+  if (!serie) { toast(`Série de ${c.initialSessions} non garantie sur l'horizon — parcours non démarré.`, 'err'); return; }
   const preview = serie.map((s) => fmtDateTime(s)).join('\n');
-  if (!confirm(`Réserver atomiquement ${count} consultations :\n\n${preview}\n\nConfirmer ?`)) return;
-  const res = store.startCircuitAtomic(d.id, serie.map((s) => s.toISOString()));
-  if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
-  toast(`Parcours démarré : ${res.created.length} consultations réservées. Invitation 7 jours.`);
-  render(mount);
+  confirmDialog(`Réserver atomiquement ${c.initialSessions} consultations :\n\n${preview}`, { okLabel: 'Confirmer' }).then((ok) => {
+    if (!ok) return;
+    const res = store.startCircuitAtomic(d.id, serie.map((s) => s.toISOString()));
+    if (res && res.error) { toast(res.message, 'err'); render(mount); return; }
+    toast(`Parcours démarré : ${res.created.length} consultations. Invitation 7 jours.`); render(mount);
+  });
 }
 
-// --- RÈGLES PATIENTS (cadence cachée du patient, ancrage) ---
+// --- RÈGLES ---
+const CADENCE_TEMPLATES = [
+  { label: 'Hebdomadaire', cadence: { mode: 'cadence', frequencyDays: 7, marginDays: 1, horizonWeeks: 12, maxFuture: 1 } },
+  { label: 'Toutes les 2 semaines', cadence: { mode: 'cadence', frequencyDays: 14, marginDays: 2, horizonWeeks: 12, maxFuture: 1 } },
+  { label: 'Toutes les 3 semaines', cadence: { mode: 'cadence', frequencyDays: 21, marginDays: 5, horizonWeeks: 12, maxFuture: 1 } },
+  { label: 'Mensuel', cadence: { mode: 'cadence', frequencyDays: 28, marginDays: 4, horizonWeeks: 12, maxFuture: 1 } },
+  { label: 'Souple 1 à 3 sem.', cadence: { mode: 'fourchette', minDays: 7, maxDays: 21, marginDays: 1, horizonWeeks: 12, maxFuture: 2 } },
+];
+
 function reglesTab(mount) {
   return el('div', {},
     el('div', { class: 'notice info' }, 'Ces règles sont strictement internes : elles ne sont jamais visibles côté patient.'),
@@ -191,7 +281,6 @@ function reglesTab(mount) {
 
 function cadenceEditor(mount, patient) {
   const cad = patient.cadence;
-  const now = new Date();
   const anchor = rules.resolveAnchor({ appointments: store.appointments(), patientId: patient.id, explicitAnchor: patient.anchorDate });
   const modeSel = el('select', { class: 'field mini' },
     el('option', { value: 'cadence', selected: cad.mode === 'cadence' ? '' : null }, 'Cadence (fréquence fixe)'),
@@ -200,13 +289,32 @@ function cadenceEditor(mount, patient) {
   const freq = num(cad.frequencyDays, 1), minD = num(cad.minDays, 1), maxD = num(cad.maxDays, 1);
   const margin = num(cad.marginDays, 0), horizon = num(cad.horizonWeeks || 12, 1), maxFut = num(cad.maxFuture, 1);
   const anchorInput = el('input', { class: 'field mini', type: 'date', value: patient.anchorDate ? patient.anchorDate.slice(0, 10) : '' });
+  const previewBox = el('div', { class: 'muted small' });
+
+  const readCadence = () => ({
+    mode: modeSel.value, frequencyDays: Number(freq.value) || undefined,
+    minDays: Number(minD.value) || undefined, maxDays: Number(maxD.value) || undefined,
+    marginDays: Number(margin.value) || 0, horizonWeeks: Number(horizon.value) || 12, maxFuture: Number(maxFut.value) || 1,
+  });
+  const preview = () => {
+    const now = new Date();
+    const open = store.openSlots({ now });
+    const a = anchorInput.value ? new Date(anchorInput.value) : anchor.date;
+    const { window: win, slots } = rules.compatibleSlots({ openSlots: open, anchor: a, cadence: readCadence(), now });
+    previewBox.textContent = `Aperçu : ${slots.length} créneau(x) proposé(s)` + (win.target ? ` · cible ${fmtDate(win.target)}` : ` · fenêtre ${fmtDate(win.from)} → ${fmtDate(win.to)}`);
+  };
+
+  const templates = el('div', { class: 'row-actions wrap' }, CADENCE_TEMPLATES.map((t) => el('button', { class: 'btn btn-ghost', onclick: () => {
+    modeSel.value = t.cadence.mode; freq.value = t.cadence.frequencyDays || ''; minD.value = t.cadence.minDays || ''; maxD.value = t.cadence.maxDays || '';
+    margin.value = t.cadence.marginDays; horizon.value = t.cadence.horizonWeeks; maxFut.value = t.cadence.maxFuture; preview();
+  } }, t.label)));
+
+  setTimeout(preview, 0);
 
   return el('div', { class: 'card' },
-    el('div', { class: 'card-head' },
-      el('h3', {}, patient.displayName),
-      el('span', { class: 'muted small' }, `code ${patient.code}`),
-    ),
+    el('div', { class: 'card-head' }, el('h3', {}, patient.displayName), el('span', { class: 'muted small' }, `code ${patient.code}`)),
     el('div', { class: 'muted small' }, `Ancrage effectif : ${anchor.date ? fmtDate(anchor.date) : '—'} (${anchor.source})`),
+    el('div', { class: 'lbl' }, 'Gabarits'), templates,
     el('div', { class: 'rule-grid' },
       el('label', { class: 'lbl' }, 'Mode'), modeSel,
       el('label', { class: 'lbl' }, 'Fréquence (jours)'), freq,
@@ -217,14 +325,12 @@ function cadenceEditor(mount, patient) {
       el('label', { class: 'lbl' }, 'RDV futurs autorisés'), maxFut,
       el('label', { class: 'lbl' }, 'Ancrage explicite (optionnel)'), anchorInput,
     ),
+    previewBox,
     el('div', { class: 'row-actions end' },
+      el('button', { class: 'btn btn-ghost', onclick: preview }, 'Aperçu'),
       el('button', { class: 'btn btn-ghost', onclick: () => { store.setAnchor(patient.id, null); toast('Ancrage remis en automatique.'); render(mount); } }, 'Ancrage auto'),
       el('button', { class: 'btn btn-primary', onclick: () => {
-        store.updateCadence(patient.id, {
-          mode: modeSel.value, frequencyDays: Number(freq.value) || undefined,
-          minDays: Number(minD.value) || undefined, maxDays: Number(maxD.value) || undefined,
-          marginDays: Number(margin.value) || 0, horizonWeeks: Number(horizon.value) || 12, maxFuture: Number(maxFut.value) || 1,
-        });
+        store.updateCadence(patient.id, readCadence());
         store.setAnchor(patient.id, anchorInput.value ? new Date(anchorInput.value).toISOString() : null);
         toast('Règles enregistrées.'); render(mount);
       } }, 'Enregistrer'),
@@ -232,97 +338,118 @@ function cadenceEditor(mount, patient) {
   );
 }
 
-// --- DISPONIBILITÉ (trame, fermetures, urgence) ---
+// --- DISPONIBILITÉ ---
 function dispoTab(mount) {
   const d = store.doctor();
   const now = new Date();
   const wdList = Object.keys(d.weeklyTemplate).map(Number).sort();
-  const closureFrom = el('input', { class: 'field mini', type: 'date' });
-  const closureTo = el('input', { class: 'field mini', type: 'date' });
-  const closureLabel = el('input', { class: 'field', placeholder: 'Motif (congé, formation, fermeture…)' });
+  const kind = el('select', { class: 'field mini' },
+    el('option', { value: 'jour' }, 'Journée(s) entière(s)'),
+    el('option', { value: 'demi' }, 'Demi-journée (matin/après-midi)'),
+    el('option', { value: 'creneau' }, 'Créneau précis'));
+  const dateFrom = el('input', { class: 'field mini', type: 'date' });
+  const dateTo = el('input', { class: 'field mini', type: 'date' });
+  const half = el('select', { class: 'field mini' }, el('option', { value: 'am' }, 'Matin (jusqu\'à 12:00)'), el('option', { value: 'pm' }, 'Après-midi (dès 12:00)'));
+  const slotDate = el('input', { class: 'field mini', type: 'date' });
+  const slotTime = el('input', { class: 'field mini', type: 'time' });
+  const label = el('input', { class: 'field', placeholder: 'Motif (congé, formation, fermeture…)' });
+
+  const dynamic = el('div', {});
+  const drawDynamic = () => {
+    clear(dynamic);
+    if (kind.value === 'jour') dynamic.append(el('label', { class: 'lbl' }, 'Du'), dateFrom, el('label', { class: 'lbl' }, 'Au'), dateTo);
+    else if (kind.value === 'demi') dynamic.append(el('label', { class: 'lbl' }, 'Date'), dateFrom, el('label', { class: 'lbl' }, 'Demi-journée'), half);
+    else dynamic.append(el('label', { class: 'lbl' }, 'Date'), slotDate, el('label', { class: 'lbl' }, 'Heure'), slotTime);
+  };
+  kind.addEventListener('change', drawDynamic); setTimeout(drawDynamic, 0);
+
+  const addClosure = () => {
+    let closure;
+    if (kind.value === 'jour') {
+      if (!dateFrom.value || !dateTo.value) { toast('Renseignez les dates.', 'err'); return; }
+      closure = { from: dateFrom.value, to: dateTo.value, label: label.value || 'fermeture' };
+    } else if (kind.value === 'demi') {
+      if (!dateFrom.value) { toast('Renseignez la date.', 'err'); return; }
+      closure = half.value === 'am'
+        ? { from: `${dateFrom.value}T00:00:00`, to: `${dateFrom.value}T12:00:00`, label: label.value || 'matinée' }
+        : { from: `${dateFrom.value}T12:00:00`, to: `${dateFrom.value}T23:59:00`, label: label.value || 'après-midi' };
+    } else {
+      if (!slotDate.value || !slotTime.value) { toast('Renseignez date et heure.', 'err'); return; }
+      const [hh, mm] = slotTime.value.split(':').map(Number);
+      const endM = mm + d.slotDurationMin;
+      const eh = hh + Math.floor(endM / 60), em = endM % 60;
+      closure = { from: `${slotDate.value}T${slotTime.value}:00`, to: `${slotDate.value}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00`, label: label.value || 'créneau fermé' };
+    }
+    const impacted = avail.appointmentsInClosure(store.appointments(), closure);
+    d.closures.push(closure);
+    store.logOp('medecin', 'fermeture ajoutée', `${closure.from} -> ${closure.to} (${closure.label})`);
+    store.save();
+    toast(impacted.length ? `Fermeture ajoutée. ${impacted.length} rdv à traiter (non déplacés).` : 'Fermeture ajoutée.', impacted.length ? 'err' : 'ok');
+    render(mount);
+  };
 
   const trame = el('div', { class: 'card' },
     el('h3', {}, 'Trame hebdomadaire'),
     el('p', { class: 'muted small' }, `Durée des consultations : ${d.slotDurationMin} min · Intervalle entre les créneaux (min) : ${d.slotDurationMin} · Horizon : ${d.horizonWeeks} semaines`),
     el('div', { class: 'list' }, wdList.map((wd) => el('div', { class: 'row-item' },
-      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd)),
-        el('div', { class: 'muted small' }, d.weeklyTemplate[wd].join(' · '))),
+      el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd)), el('div', { class: 'muted small' }, d.weeklyTemplate[wd].join(' · '))),
     ))),
-    el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}. Encodable par le secrétariat seulement après votre accord tracé (onglet Files / bouton dédié ci-dessous).`),
+    el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}.`),
+    Object.keys(d.protectedTemplate || {}).length ? el('div', { class: 'notice info small' }, `Créneaux protégés (réservés, non publics) : ${Object.entries(d.protectedTemplate).map(([wd, t]) => weekdayLabel(Number(wd)) + ' ' + t.join(',')).join(' ; ')}.`) : null,
     el('div', { class: 'row-actions end' },
-      el('button', { class: 'btn btn-ghost', onclick: () => {
-        const p = prompt('Autoriser une urgence 12:15 pour quel code patient ?'); if (!p) return;
-        const pat = store.patientByCode(p); if (!pat) { toast('Code inconnu.', 'err'); return; }
-        // prochaine urgence jeudi 12:15 ouverte
-        const emg = avail.generateOpenSlots({ doctor: d, appointments: store.appointments(), from: now, to: new Date(now.getTime() + 21 * 864e5), now, includeEmergency: true }).find((s) => s.emergency);
-        if (!emg) { toast('Aucun créneau urgence disponible.', 'err'); return; }
-        store.authorizeEmergency(pat.id, emg.start.toISOString());
-        toast(`Urgence ${fmtDateTime(emg.start)} autorisée pour ${pat.displayName}. Le secrétariat peut l'encoder.`);
-        render(mount);
-      } }, 'Autoriser une urgence 12:15'),
+      el('button', { class: 'btn btn-ghost', onclick: () => authorizeEmergencyPrompt(mount) }, 'Autoriser une urgence 12:15'),
     ),
   );
 
   const closures = el('div', { class: 'card' },
     el('h3', {}, 'Congés / fermetures / exceptions datées'),
-    el('div', { class: 'rule-grid' },
-      el('label', { class: 'lbl' }, 'Du'), closureFrom,
-      el('label', { class: 'lbl' }, 'Au'), closureTo,
-    ),
-    closureLabel,
-    el('div', { class: 'row-actions end' },
-      el('button', { class: 'btn btn-primary', onclick: () => {
-        if (!closureFrom.value || !closureTo.value) { toast('Renseignez les dates.', 'err'); return; }
-        const closure = { from: closureFrom.value, to: closureTo.value, label: closureLabel.value || 'fermeture' };
-        const impacted = avail.appointmentsInClosure(store.appointments(), closure);
-        d.closures.push(closure);
-        store.logOp('medecin', 'fermeture ajoutée', `${closure.from}->${closure.to} (${closure.label})`);
-        store.save();
-        if (impacted.length) {
-          toast(`Fermeture ajoutée. ${impacted.length} rendez-vous à traiter (non déplacés automatiquement).`, 'err');
-        } else { toast('Fermeture ajoutée.'); }
-        render(mount);
-      } }, 'Ajouter la fermeture'),
-    ),
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Type'), kind),
+    dynamic, label,
+    el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-primary', onclick: addClosure }, 'Ajouter la fermeture')),
     d.closures.length ? el('div', { class: 'list' }, d.closures.map((c, i) => {
       const impacted = avail.appointmentsInClosure(store.appointments(), c);
       return el('div', { class: 'row-item stack' },
-        el('div', {}, el('div', { class: 'row-title' }, `${fmtDate(c.from)} → ${fmtDate(c.to)} · ${c.label}`),
-          impacted.length ? el('div', { class: 'notice info small' },
-            `${impacted.length} rendez-vous à traiter (bloque toute nouvelle réservation sur la période, sans déplacer personne) :`,
-            el('ul', { class: 'mini-list' }, impacted.map((a) => el('li', {}, `${fmtDateTime(a.datetime)} — ${labelFor(a)}`))),
-          ) : el('div', { class: 'muted small' }, 'Aucun rendez-vous impacté.')),
-        el('div', { class: 'row-actions' },
-          el('button', { class: 'btn btn-ghost danger', onclick: () => { d.closures.splice(i, 1); store.logOp('medecin', 'fermeture retirée', `${c.from}->${c.to}`); store.save(); render(mount); } }, 'Retirer'),
-        ),
+        el('div', {}, el('div', { class: 'row-title' }, `${fmtDateTime(c.from)} → ${fmtDateTime(c.to)} · ${c.label}`),
+          impacted.length ? el('div', { class: 'notice info small' }, `${impacted.length} rendez-vous à traiter (bloque toute nouvelle réservation, sans déplacer personne) :`,
+            el('ul', { class: 'mini-list' }, impacted.map((a) => el('li', {}, `${fmtDateTime(a.datetime)} — ${labelFor(a)}`)))) : el('div', { class: 'muted small' }, 'Aucun rendez-vous impacté.')),
+        el('div', { class: 'row-actions' }, el('button', { class: 'btn btn-ghost danger', onclick: () => { d.closures.splice(i, 1); store.logOp('medecin', 'fermeture retirée', `${c.from}`); store.save(); render(mount); } }, 'Retirer')),
       );
     })) : el('div', { class: 'empty' }, 'Aucune fermeture enregistrée.'),
   );
-
   return el('div', {}, trame, closures);
 }
 
-// --- MIGRATION CSV ---
+function authorizeEmergencyPrompt(mount) {
+  const input = el('input', { class: 'field', placeholder: 'Code patient (ex. ANNE-2026)' });
+  const m = modal('Autoriser une urgence 12:15', [el('p', { class: 'muted small' }, 'Le secrétariat pourra encoder le prochain créneau d\'urgence pour ce patient (accord tracé).'), input], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => {
+      const pat = store.patientByCode(input.value); if (!pat) { toast('Code inconnu.', 'err'); return; }
+      const d = store.doctor(); const now = new Date();
+      const emg = avail.generateOpenSlots({ doctor: d, appointments: store.appointments(), from: now, to: new Date(now.getTime() + 21 * 864e5), now, includeEmergency: true }).find((s) => s.emergency);
+      if (!emg) { toast('Aucun créneau urgence disponible.', 'err'); return; }
+      store.authorizeEmergency(pat.id, emg.start.toISOString()); m.close();
+      toast(`Urgence ${fmtDateTime(emg.start)} autorisée pour ${pat.displayName}.`); render(mount);
+    } }, 'Autoriser'),
+  ]);
+}
+
+// --- MIGRATION ---
 let migrationRows = null;
 function migrationTab(mount) {
   const ta = el('textarea', { class: 'field mono', rows: '7' }, store.get().fakeCsv);
   const preview = el('div', {});
   if (migrationRows) preview.appendChild(migrationPreview(mount));
-
   return el('div', {},
     el('div', { class: 'card' },
       el('h3', {}, 'Migration depuis Mobminder (CSV fictif)'),
       el('p', { class: 'muted small' }, 'Import des rendez-vous futurs. Prévisualisation, détection des doublons / collisions / rejets, contrôle humain, journal. Aucune écriture tant que vous ne validez pas.'),
       ta,
-      el('div', { class: 'row-actions end' },
-        el('button', { class: 'btn btn-ghost', onclick: () => { migrationRows = store.analyzeCsv(ta.value); render(mount); } }, 'Analyser'),
-      ),
+      el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => { migrationRows = store.analyzeCsv(ta.value); render(mount); } }, 'Analyser')),
     ),
-    preview,
-    migrationLog(),
+    preview, migrationLog(),
   );
 }
-
 function migrationPreview(mount) {
   const rows = migrationRows;
   const ok = rows.filter((r) => r.accepted).length;
@@ -338,32 +465,24 @@ function migrationPreview(mount) {
     )),
     el('div', { class: 'row-actions end' },
       el('button', { class: 'btn btn-ghost', onclick: () => { migrationRows = null; render(mount); } }, 'Annuler'),
-      el('button', { class: 'btn btn-primary', onclick: () => {
-        const rec = store.commitMigration(rows);
-        toast(`Migration : ${rec.imported} importés, ${rec.rejected} rejetés.`);
-        migrationRows = null; render(mount);
-      } }, `Valider l'import (${ok})`),
+      el('button', { class: 'btn btn-primary', onclick: () => { const rec = store.commitMigration(rows); toast(`Migration : ${rec.imported} importés, ${rec.rejected} rejetés.`); migrationRows = null; render(mount); } }, `Valider l'import (${ok})`),
     ),
   );
 }
-
 function migrationLog() {
   const migs = [...store.migrations()].reverse();
   if (!migs.length) return el('div', {});
-  return el('div', { class: 'card' },
-    el('h3', {}, 'Journal de migration'),
+  return el('div', { class: 'card' }, el('h3', {}, 'Journal de migration'),
     el('div', { class: 'list' }, migs.map((m) => el('div', { class: 'row-item' },
-      el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(m.ts)),
-        el('div', { class: 'muted small' }, `total ${m.total} · importés ${m.imported} · rejetés ${m.rejected}`)),
-    ))),
-  );
+      el('div', {}, el('div', { class: 'row-title' }, fmtDateTime(m.ts)), el('div', { class: 'muted small' }, `total ${m.total} · importés ${m.imported} · rejetés ${m.rejected}`))))));
 }
 
-// --- JOURNAL (adapté téléphone : cartes empilées) ---
+// --- JOURNAL ---
 function journalTab() {
   const entries = store.logEntries();
   return el('div', { class: 'card' },
-    el('h3', {}, 'Journal des opérations'),
+    el('div', { class: 'card-head' }, el('h3', {}, 'Journal des opérations'),
+      el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); } }, 'Exporter CSV')),
     entries.length ? el('div', { class: 'journal-list' }, entries.map((e) => el('div', { class: 'journal-item' },
       el('div', { class: 'journal-top' }, el('span', { class: 'pill' }, e.actor), el('span', { class: 'muted small' }, fmtDateTime(e.ts))),
       el('div', { class: 'journal-action' }, e.action),
@@ -374,33 +493,88 @@ function journalTab() {
 
 function emailsTab() {
   const mails = store.neutralEmails();
-  return el('div', { class: 'card' },
-    el('h3', {}, 'E-mails de notification (aperçu)'),
-    el('p', { class: 'muted' }, "Volontairement neutres : aucun contenu clinique. Ils signalent seulement qu'une demande est disponible."),
-    mails.length ? el('div', { class: 'list' }, mails.map((m) => el('div', { class: 'mail' },
-      el('div', { class: 'mail-head' }, el('strong', {}, m.subject), el('span', { class: 'muted small' }, fmtDateTime(m.ts))),
-      el('pre', { class: 'mail-body' }, m.body),
-    ))) : el('div', { class: 'empty' }, "Aucun e-mail pour l'instant."),
+  const reminders = store.simulateReminders();
+  return el('div', {},
+    el('div', { class: 'card' },
+      el('h3', {}, 'E-mails de notification (aperçu)'),
+      el('p', { class: 'muted' }, "Volontairement neutres : aucun contenu clinique. Ils signalent seulement qu'une demande est disponible."),
+      mails.length ? el('div', { class: 'list' }, mails.map((m) => el('div', { class: 'mail' },
+        el('div', { class: 'mail-head' }, el('strong', {}, m.subject), el('span', { class: 'muted small' }, fmtDateTime(m.ts))),
+        el('pre', { class: 'mail-body' }, m.body),
+      ))) : el('div', { class: 'empty' }, "Aucun e-mail pour l'instant."),
+    ),
+    el('div', { class: 'card' },
+      el('h3', {}, 'Rappels neutres à envoyer (simulés)'),
+      reminders.length ? el('div', { class: 'list' }, reminders.map((r) => el('div', { class: 'row-item' },
+        el('div', {}, el('div', { class: 'row-title' }, `Rappel J-${r.jMinus}`), el('div', { class: 'muted small' }, `${labelFor(r)} · ${fmtDateTime(r.datetime)}`)),
+      ))) : el('div', { class: 'empty' }, 'Aucun rappel dû (selon la configuration).'),
+    ),
+  );
+}
+
+// --- RÉGLAGES ---
+function reglagesTab(mount) {
+  const cfg = store.notifyConfig();
+  const chk = (key, label) => {
+    const c = el('input', { type: 'checkbox' }); c.checked = !!cfg[key];
+    c.addEventListener('change', () => { store.setNotifyConfig({ [key]: c.checked }); toast('Configuration enregistrée.'); });
+    return el('label', { class: 'check' }, c, ' ' + label);
+  };
+  const importInput = el('input', { type: 'file', accept: 'application/json', style: 'display:none' });
+  importInput.addEventListener('change', () => {
+    const f = importInput.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => { const r = store.importState(String(reader.result)); if (r.error) toast(r.message, 'err'); else { toast('État restauré.'); tab = 'accueil'; render(mount); } };
+    reader.readAsText(f);
+  });
+  return el('div', {},
+    el('div', { class: 'card' },
+      el('h3', {}, 'Notifications neutres'),
+      el('p', { class: 'muted small' }, 'Le contenu clinique ne transite jamais par e-mail. Vous choisissez seulement quels signaux neutres sont émis.'),
+      chk('onComment', 'Me notifier quand une personne ajoute un commentaire/demande'),
+      chk('remindersJ2', 'Rappels neutres J-2 aux patients'),
+      chk('remindersJ1', 'Rappels neutres J-1 aux patients'),
+    ),
+    el('div', { class: 'card' },
+      el('h3', {}, 'Sauvegarde locale de la démonstration'),
+      el('p', { class: 'muted small' }, 'Exporter/restaurer l\'état de la démo (utile pour les tests). Données fictives uniquement.'),
+      el('div', { class: 'row-actions wrap' },
+        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('demo-etat.json', store.exportState(), 'application/json'); toast('État exporté.'); } }, 'Exporter l\'état'),
+        el('button', { class: 'btn btn-ghost', onclick: () => importInput.click() }, 'Importer un état'),
+        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); } }, 'Exporter le journal (CSV)'),
+      ),
+      importInput,
+    ),
+    el('div', { class: 'card' },
+      el('h3', {}, 'Statistiques'),
+      statsGrid(),
+    ),
+  );
+}
+function statsGrid() {
+  const s = store.stats();
+  const item = (n, l) => el('div', { class: 'stat' }, el('div', { class: 'stat-num' }, String(n)), el('div', { class: 'muted small' }, l));
+  return el('div', { class: 'stat-grid' },
+    item(s.byStatus.effectue || 0, 'Effectués'),
+    item(s.byStatus.absent || 0, 'Absences'),
+    item(s.absenceRate + '%', 'Taux d\'absence'),
+    item(s.occupancy + '%', 'Occupation 4 sem.'),
+    item(s.upcoming, 'RDV à venir'),
+    item(s.waitlist, 'Désistements'),
   );
 }
 
 function render(mount) {
   clear(mount);
   mount.appendChild(el('div', { class: 'space-head' },
-    el('div', {}, el('h2', {}, 'Tableau de bord — Dr Mathieu Place'),
-      el('p', { class: 'muted' }, 'Démonstration — données fictives locales')),
-    el('button', { class: 'btn btn-ghost danger', onclick: () => { if (confirm('Réinitialiser toutes les données de démonstration ?')) { store.reset(); tab = 'agenda'; migrationRows = null; render(mount); toast('Données réinitialisées.'); } } }, 'Réinitialiser la démo'),
+    el('div', {}, el('h2', {}, 'Tableau de bord — Dr Mathieu Place'), el('p', { class: 'muted' }, 'Démonstration — données fictives locales')),
+    el('button', { class: 'btn btn-ghost danger', onclick: async () => { if (await confirmDialog('Réinitialiser toutes les données de démonstration ?', { danger: true })) { store.reset(); tab = 'accueil'; migrationRows = null; render(mount); toast('Données réinitialisées.'); } } }, 'Réinitialiser la démo'),
   ));
   mount.appendChild(tabs(mount));
   const body = el('div', {});
-  if (tab === 'agenda') body.appendChild(agendaTab(mount));
-  else if (tab === 'intervention') body.appendChild(interventionTab(mount));
-  else if (tab === 'files') body.appendChild(filesTab(mount));
-  else if (tab === 'regles') body.appendChild(reglesTab(mount));
-  else if (tab === 'dispo') body.appendChild(dispoTab(mount));
-  else if (tab === 'migration') body.appendChild(migrationTab(mount));
-  else if (tab === 'journal') body.appendChild(journalTab());
-  else if (tab === 'emails') body.appendChild(emailsTab());
+  const map = { accueil: accueilTab, agenda: agendaTab, intervention: interventionTab, files: filesTab, regles: reglesTab, dispo: dispoTab, migration: migrationTab, journal: journalTab, emails: emailsTab, reglages: reglagesTab };
+  const fn = map[tab] || accueilTab;
+  body.appendChild(fn(mount));
   mount.appendChild(body);
 }
 

@@ -1,0 +1,19 @@
+{
+  "name": "Portail Dr Mathieu Place — prototype",
+  "short_name": "Portail RDV",
+  "description": "Prototype de prise de rendez-vous (démonstration à données fictives).",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#3a5bd9",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -5,7 +5,7 @@ import { buildSeed } from '../data/seed.js';
 import * as avail from './availability.js';
 import * as rules from './rules.js';
 
-const KEY = 'pcp.state.v3';
+const KEY = 'pcp.state.v4';
 let state = null;
 const listeners = new Set();
 
@@ -14,7 +14,7 @@ export function load() {
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      state = (parsed && parsed.version === 3) ? parsed : buildSeed(new Date());
+      state = (parsed && parsed.version === 4) ? parsed : buildSeed(new Date());
     } catch { state = buildSeed(new Date()); }
   } else {
     state = buildSeed(new Date());
@@ -66,7 +66,9 @@ export function logOp(actor, action, detail) {
 
 // --- Notifications e-mail NEUTRES (aucun contenu clinique) ---
 let neutralInbox = [];
-export function pushNeutralEmail() {
+export function pushNeutralEmail(kind = 'demande') {
+  const cfg = (doctor().notifyConfig) || { onComment: true };
+  if (kind === 'demande' && cfg.onComment === false) return; // notifications de demande désactivées
   neutralInbox.push({
     ts: new Date().toISOString(),
     subject: 'Nouvelle demande disponible',
@@ -74,6 +76,28 @@ export function pushNeutralEmail() {
   });
 }
 export function neutralEmails() { return [...neutralInbox].reverse(); }
+export function notifyConfig() { return doctor().notifyConfig || { onComment: true, remindersJ2: true, remindersJ1: true }; }
+export function setNotifyConfig(patch) {
+  const d = doctor();
+  d.notifyConfig = { ...notifyConfig(), ...patch };
+  logOp('medecin', 'config notifications', JSON.stringify(d.notifyConfig));
+  save();
+  return d.notifyConfig;
+}
+// Rappels neutres simulés (J-2 / J-1) pour les rdv planifiés à venir — aperçu démo.
+export function simulateReminders(now = new Date()) {
+  const cfg = notifyConfig();
+  const wins = [];
+  if (cfg.remindersJ2) wins.push(2);
+  if (cfg.remindersJ1) wins.push(1);
+  const out = [];
+  for (const a of get().appointments) {
+    if (a.status !== 'planifie') continue;
+    const days = Math.round((new Date(a.datetime) - now) / (24 * 3600 * 1000));
+    if (wins.includes(days)) out.push({ appointmentId: a.id, patientId: a.patientId, datetime: a.datetime, jMinus: days });
+  }
+  return out;
+}
 
 // --- Statuts ---
 export const STATUSES = ['planifie', 'effectue', 'deplace', 'annule', 'absent'];
@@ -125,11 +149,12 @@ export function moveAppointment(appointmentId, newDatetimeISO, { actor = 'patien
   return b;
 }
 
-export function cancelAppointment(appointmentId, { actor = 'patient' } = {}) {
+export function cancelAppointment(appointmentId, { actor = 'patient', reason = '' } = {}) {
   const a = get().appointments.find((x) => x.id === appointmentId);
   if (!a) return null;
   a.status = 'annule';
-  logOp(actor, 'annulation', `${a.patientId} @ ${a.datetime}`);
+  if (reason) a.cancelReason = reason;
+  logOp(actor, 'annulation', `${a.patientId} @ ${a.datetime}${reason ? ' · motif: ' + reason : ''}`);
   save();
   return a;
 }
@@ -218,12 +243,26 @@ export function useEmergencyAuth(authId, { actor = 'secretariat' } = {}) {
 
 // --- File 1 : liste de désistement (patient déjà suivi voulant AVANCER) ---
 // Inscription expire au prochain rdv du patient. Offre successive 48h.
-export function joinWaitlist(patientId, { actor = 'patient' } = {}) {
+// prefs = { weekdays:[1..7]|null, timeFrom:'HH:MM'|null, timeTo:'HH:MM'|null, minDelayHours:number }
+export function joinWaitlist(patientId, { actor = 'patient', prefs = {} } = {}) {
   if (get().waitlist.some((w) => w.patientId === patientId)) return;
   const next = futureAppointmentsOf(patientId).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0] || null;
-  get().waitlist.push({ patientId, createdAt: new Date().toISOString(), expiresAt: next ? next.toISOString() : null });
+  get().waitlist.push({
+    patientId, createdAt: new Date().toISOString(), expiresAt: next ? next.toISOString() : null,
+    prefs: {
+      weekdays: prefs.weekdays || null, timeFrom: prefs.timeFrom || null,
+      timeTo: prefs.timeTo || null, minDelayHours: prefs.minDelayHours != null ? prefs.minDelayHours : 24,
+    },
+  });
   logOp(actor, 'désistement inscription', patientId);
   save();
+}
+export function updateWaitlistPrefs(patientId, prefs) {
+  const w = get().waitlist.find((x) => x.patientId === patientId);
+  if (!w) return null;
+  w.prefs = { ...w.prefs, ...prefs };
+  save();
+  return w.prefs;
 }
 export function leaveWaitlist(patientId) {
   get().waitlist = get().waitlist.filter((w) => w.patientId !== patientId);
@@ -235,33 +274,83 @@ export function purgeWaitlist(now = new Date()) {
   get().waitlist = get().waitlist.filter((w) => !w.expiresAt || new Date(w.expiresAt) > now);
   if (get().waitlist.length !== before) save();
 }
-// Propose une place libérée à la 1re personne compatible (offre 48h).
-export function offerFreedSlot(datetimeISO, { now = new Date() } = {}) {
+function slotMatchesPrefs(candidate, prefs, now) {
+  if (!prefs) return true;
+  if (prefs.minDelayHours != null && candidate.getTime() < now.getTime() + prefs.minDelayHours * 3600 * 1000) return false;
+  if (prefs.weekdays && prefs.weekdays.length && !prefs.weekdays.includes(rules.isoWeekday(candidate))) return false;
+  const hhmm = `${String(candidate.getHours()).padStart(2, '0')}:${String(candidate.getMinutes()).padStart(2, '0')}`;
+  if (prefs.timeFrom && hhmm < prefs.timeFrom) return false;
+  if (prefs.timeTo && hhmm > prefs.timeTo) return false;
+  return true;
+}
+// Ordre des personnes compatibles pour une place libérée (respecte prefs + délai + avance).
+export function compatibleWaitlist(datetimeISO, { now = new Date() } = {}) {
   const slots = openSlots({ now });
   const candidate = new Date(datetimeISO);
-  const list = get().waitlist
+  return get().waitlist
     .map((w) => ({ w, patient: patientById(w.patientId) }))
-    .filter(({ patient }) => {
+    .filter(({ w, patient }) => {
       if (!patient) return false;
+      if (!slotMatchesPrefs(candidate, w.prefs, now)) return false;
       const anchor = rules.resolveAnchor({ appointments: appointments(), patientId: patient.id, explicitAnchor: patient.anchorDate }).date;
       const { slots: compat } = rules.compatibleSlots({ openSlots: slots, anchor, cadence: patient.cadence, now });
-      // la place libérée doit AVANCER le patient (avant son prochain rdv actuel)
       const next = futureAppointmentsOf(patient.id, now).map((a) => new Date(a.datetime)).sort((a, b) => a - b)[0];
       const earlier = next ? candidate < next : true;
       return earlier && compat.some((d) => d.getTime() === candidate.getTime());
     })
-    .sort((a, b) => new Date(a.w.createdAt) - new Date(b.w.createdAt));
-  if (list.length === 0) return { error: 'none', message: 'Aucune personne compatible.' };
-  const first = list[0];
+    .sort((a, b) => new Date(a.w.createdAt) - new Date(b.w.createdAt))
+    .map((x) => x.patient.id);
+}
+// Propose une place libérée à la 1re personne compatible (offre 48h).
+export function offerFreedSlot(datetimeISO, { now = new Date() } = {}) {
+  const order = compatibleWaitlist(datetimeISO, { now });
+  if (order.length === 0) return { error: 'none', message: 'Aucune personne compatible (préférences/délai).' };
   const offer = {
-    id: uid('offer'), patientId: first.patient.id, datetime: datetimeISO,
+    id: uid('offer'), patientId: order[0], datetime: datetimeISO,
     createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 48 * 3600 * 1000).toISOString(),
-    status: 'en cours', order: list.map((x) => x.patient.id),
+    status: 'en cours', order, position: 0,
   };
   get().offers.push(offer);
-  logOp('systeme', 'désistement offre', `${first.patient.id} @ ${datetimeISO} (48h)`);
+  logOp('systeme', 'désistement offre', `${order[0]} @ ${datetimeISO} (48h)`);
   save();
   return offer;
+}
+// Relance : passe à la personne suivante (refus explicite ou expiration 48h).
+export function advanceOffer(offerId, { reason = 'sans réponse', now = new Date() } = {}) {
+  const o = get().offers.find((x) => x.id === offerId);
+  if (!o || o.status !== 'en cours') return { error: 'invalid' };
+  o.position += 1;
+  if (o.position >= o.order.length) {
+    o.status = 'épuisée';
+    logOp('systeme', 'désistement offre épuisée', `${o.datetime}`);
+    save();
+    return { done: true };
+  }
+  o.patientId = o.order[o.position];
+  o.createdAt = now.toISOString();
+  o.expiresAt = new Date(now.getTime() + 48 * 3600 * 1000).toISOString();
+  logOp('systeme', 'désistement relance', `${o.patientId} @ ${o.datetime} (${reason})`);
+  save();
+  return o;
+}
+export function acceptOffer(offerId, { actor = 'patient' } = {}) {
+  const o = get().offers.find((x) => x.id === offerId);
+  if (!o || o.status !== 'en cours') return { error: 'invalid' };
+  const res = bookAppointment(o.patientId, o.datetime, { actor });
+  if (res && res.error) return res;
+  o.status = 'acceptée';
+  leaveWaitlist(o.patientId);
+  logOp(actor, 'désistement accepté', `${o.patientId} @ ${o.datetime}`);
+  save();
+  return res;
+}
+// Expire automatiquement les offres dépassées (relance la personne suivante).
+export function processOffers(now = new Date()) {
+  let changed = false;
+  for (const o of get().offers) {
+    if (o.status === 'en cours' && new Date(o.expiresAt) <= now) { advanceOffer(o.id, { reason: 'expiration 48h', now }); changed = true; }
+  }
+  return changed;
 }
 
 // --- File 2 : avis / parcours ciblés (NOUVELLE demande) ---
@@ -416,4 +505,53 @@ export function commitMigration(rows) {
   logOp('medecin', 'migration CSV', `importés ${imported} / rejetés ${rejected} / total ${rows.length}`);
   save();
   return record;
+}
+
+// --- Statistiques agrégées (aucune donnée nominative sensible) ---
+export function stats(now = new Date()) {
+  const appts = get().appointments;
+  const byStatus = {};
+  for (const s of STATUSES) byStatus[s] = appts.filter((a) => a.status === s).length;
+  const planned = appts.filter((a) => a.status === 'planifie');
+  const upcoming = planned.filter((a) => new Date(a.datetime) > now).length;
+  const done = byStatus.effectue || 0;
+  const absent = byStatus.absent || 0;
+  const cancelled = byStatus.annule || 0;
+  const past = done + absent + cancelled;
+  const absenceRate = past ? Math.round((absent / past) * 100) : 0;
+  // Occupation des 4 prochaines semaines : rdv planifiés / créneaux ouverts.
+  const from = new Date(now);
+  const to = new Date(now.getTime() + 28 * 24 * 3600 * 1000);
+  const open = avail.generateOpenSlots({ doctor: doctor(), appointments: appts, from, to, now });
+  const plannedNext = planned.filter((a) => { const d = new Date(a.datetime); return d > now && d <= to; }).length;
+  const capacity = open.length + plannedNext;
+  const occupancy = capacity ? Math.round((plannedNext / capacity) * 100) : 0;
+  // Séances d'avis (circuits) planifiées dans les 4 semaines.
+  const avisNext = planned.filter((a) => a.circuitInstanceId && new Date(a.datetime) > now && new Date(a.datetime) <= to).length;
+  return {
+    byStatus, upcoming, absenceRate, occupancy, avisNext,
+    avisCapacity: doctor().avisCapacity, waitlist: get().waitlist.length,
+    demandsOpen: get().demands.filter((d) => d.status === 'deposee').length,
+    requestsOpen: openRequests().length,
+  };
+}
+
+// --- Export / import de l'état (sauvegarde/restauration locale de la démo) ---
+export function exportState() { return JSON.stringify(get(), null, 2); }
+export function importState(json) {
+  try {
+    const parsed = JSON.parse(json);
+    if (!parsed || parsed.version !== 4) return { error: 'version', message: 'Fichier incompatible (version attendue : 4).' };
+    state = parsed; save();
+    logOp('medecin', 'import état', 'restauration locale');
+    return { ok: true };
+  } catch (e) { return { error: 'parse', message: 'Fichier illisible.' }; }
+}
+
+// --- Journal exportable en CSV ---
+export function journalCsv() {
+  const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const rows = [['horodatage', 'acteur', 'action', 'detail']];
+  for (const e of get().log) rows.push([e.ts, e.actor, e.action, e.detail || '']);
+  return rows.map((r) => r.map(esc).join(';')).join('\r\n');
 }

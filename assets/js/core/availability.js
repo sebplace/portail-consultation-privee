@@ -52,7 +52,7 @@ function isBusy(slotStart, durationMin, appointments) {
 // - includeEmergency=false : les créneaux d'urgence sont exclus (invisibles au public).
 // - retourne [{ start:Date, iso, day, time, emergency:boolean }]
 export function generateOpenSlots({
-  doctor, appointments = [], from, to, now = new Date(), includeEmergency = false,
+  doctor, appointments = [], from, to, now = new Date(), includeEmergency = false, includeProtected = false,
 }) {
   const dur = doctor.slotDurationMin;
   const out = [];
@@ -60,16 +60,20 @@ export function generateOpenSlots({
   cursor.setHours(0, 0, 0, 0);
   const end = new Date(to.getTime());
   end.setHours(23, 59, 59, 999);
+  const protectedTpl = doctor.protectedTemplate || {};
   while (cursor <= end) {
     const wd = isoWeekday(cursor);
-    const publicTimes = (doctor.weeklyTemplate[wd] || []).map((t) => ({ t, emergency: false }));
-    const emgTimes = includeEmergency ? (doctor.emergencyTemplate[wd] || []).map((t) => ({ t, emergency: true })) : [];
-    for (const { t, emergency } of [...publicTimes, ...emgTimes]) {
+    const publicTimes = (doctor.weeklyTemplate[wd] || []).map((t) => ({ t, emergency: false, protected: false }));
+    const emgTimes = includeEmergency ? (doctor.emergencyTemplate[wd] || []).map((t) => ({ t, emergency: true, protected: false })) : [];
+    const protTimes = includeProtected ? (protectedTpl[wd] || []).map((t) => ({ t, emergency: false, protected: true })) : [];
+    for (const { t, emergency, protected: prot } of [...publicTimes, ...emgTimes, ...protTimes]) {
+      // Un créneau protégé n'est jamais public.
+      if (!includeProtected && (protectedTpl[wd] || []).includes(t)) continue;
       const start = atTime(cursor, t);
       if (start <= now) continue;
       if (isClosed(start, doctor.closures)) continue;
       if (isBusy(start, dur, appointments)) continue;
-      out.push({ start, iso: start.toISOString(), day: ymd(start), time: t, emergency });
+      out.push({ start, iso: start.toISOString(), day: ymd(start), time: t, emergency, protected: prot });
     }
     cursor = addDays(cursor, 1);
   }
