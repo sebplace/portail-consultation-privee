@@ -85,9 +85,12 @@ const DICT = {
   },
 };
 
-const LANGS = [['fr', 'FR'], ['nl', 'NL'], ['en', 'EN']];
+// Langues exposées publiquement. Gel actuel : uniquement le français.
+// NL et EN restent définis dans DICT et pourront être réexposés après relecture
+// complète des traductions (boutons, statuts, dates encore partiellement en FR).
+const LANGS = [['fr', 'FR']];
 let current = 'fr';
-try { const s = localStorage.getItem('pcp.lang'); if (s && DICT[s]) current = s; } catch (e) {}
+try { const s = localStorage.getItem('pcp.lang'); if (s && DICT[s] && LANGS.some(([c]) => c === s)) current = s; } catch (e) {}
 
 export function langs() { return LANGS; }
 export function getLang() { return current; }

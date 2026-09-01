@@ -16,6 +16,14 @@ export function el(tag, attrs = {}, ...children) {
 
 export function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
+// Accessibilité : associe un libellé à un champ via for/id (id auto si absent).
+// Retourne [label, input] afin de rester des frères directs (compatible grilles CSS).
+let _autoId = 0;
+export function field(labelText, input, labelClass = 'lbl') {
+  if (!input.id) input.id = 'f-' + (++_autoId);
+  return [el('label', { class: labelClass, for: input.id }, labelText), input];
+}
+
 const WD = ['', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
 const WD_SHORT = ['', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 export function weekdayLabel(iso) { return WD[iso] || ''; }

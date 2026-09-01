@@ -6,6 +6,9 @@ import { mountSecretary } from './views/secretary.js';
 import { mountDoctor } from './views/doctor.js';
 import { el, clear, toast } from './views/dom.js';
 
+// Numéro de version affiché et utilisé pour repérer les mises à jour du cache.
+export const APP_VERSION = 'v7';
+
 store.load();
 
 const app = document.getElementById('app');
@@ -46,7 +49,7 @@ function render() {
   const skip = document.querySelector('.skip-link'); if (skip) skip.textContent = i18n.t('skip');
   const themeBtn = el('button', { class: 'theme-btn', title: i18n.t('theme.toggle'), 'aria-label': i18n.t('theme.toggle'), onclick: toggleTheme }, currentTheme() === 'dark' ? '☀️' : '🌙');
 
-  const right = el('div', { class: 'header-right' }, switcher(), langSelect(), themeBtn);
+  const right = el('div', { class: 'header-right' }, switcher(), i18n.langs().length > 1 ? langSelect() : null, themeBtn);
   // Cloche de décisions + undo (uniquement côté médecin).
   if (space === 'medecin') {
     const count = store.pendingDecisionsCount();
@@ -71,7 +74,7 @@ function render() {
   else if (space === 'secretariat') mountSecretary(main);
   else mountDoctor(main);
 
-  app.appendChild(el('footer', { class: 'foot' }, i18n.t('foot')));
+  app.appendChild(el('footer', { class: 'foot' }, i18n.t('foot') + ' · Version ' + APP_VERSION));
 }
 
 window.addEventListener('hashchange', render);

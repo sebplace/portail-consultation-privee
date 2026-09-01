@@ -3,7 +3,7 @@
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
 import * as avail from '../core/availability.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayLabel, weekdayShort, toast, modal, confirmDialog, downloadText } from './dom.js';
+import { el, clear, field, fmtDateTime, fmtDate, fmtTime, weekdayLabel, weekdayShort, toast, modal, confirmDialog, downloadText } from './dom.js';
 
 let tab = 'accueil';
 window.addEventListener('goto-decisions', () => { tab = 'accueil'; });
@@ -57,7 +57,9 @@ function aujourdhuiTab(mount) {
   return el('div', {},
     el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h3', {}, `Aujourd'hui — ${fmtDate(now)}`), el('button', { class: 'btn btn-ghost', onclick: () => confirmPersonalData("L'impression de la journée", () => window.print()) }, '🖨️ Imprimer')),
-      next ? el('div', { class: 'notice info' }, `Prochain : ${fmtTime(next.datetime)} — ${labelFor(next)}`) : null,
+      next ? el('div', { class: 'notice info' }, today.length
+        ? `Prochain : ${fmtTime(next.datetime)} — ${labelFor(next)}`
+        : `Prochain rendez-vous à venir : ${fmtDateTime(next.datetime)} — ${labelFor(next)}`) : null,
       today.length ? el('div', { class: 'list' }, today.map((a) => el('div', { class: 'row-item' },
         el('div', {}, el('div', { class: 'row-title' }, `${fmtTime(a.datetime)} — ${labelFor(a)}`),
           el('div', { class: 'muted small' }, `${a.durationMin} min${a.circuitInstanceId ? ' · parcours' : ''}${a.emergency ? ' · urgence' : ''}`)),
@@ -329,6 +331,7 @@ function demandRow(mount, d) {
   return el('div', { class: 'row-item stack' },
     el('div', {},
       el('div', { class: 'row-title' }, `${c ? c.label : d.circuitId} `, el('span', { class: 'pill' + (String(d.status).startsWith('accept') ? ' warn' : '') }, store.DEMAND_STATUSES[d.status] || d.status), `  réf. `, el('span', { class: 'ref-code' }, d.id.slice(-6).toUpperCase())),
+      (d.prenom || d.nom || d.email) ? el('div', { class: 'muted small' }, `Demandeur : ${[d.prenom, d.nom].filter(Boolean).join(' ') || '—'}${d.naissance ? ' · né·e le ' + d.naissance : ''}${d.email ? ' · ' + d.email : ''}${d.tel ? ' · ' + d.tel : ''}`) : null,
       el('div', { class: 'muted small' }, `déposée ${fmtDate(d.createdAt)} · origine ${d.origine}${d.adressePar ? ' · adressé par ' + d.adressePar : ''} · relais : ${d.relais || 'à identifier'}${d.relaisCoord ? ' (' + d.relaisCoord + ')' : ''}`),
       d.objectif ? el('div', { class: 'muted small' }, 'Objectif : ' + d.objectif) : null,
       circuitStarted ? el('div', { class: 'muted small' }, `Parcours : ${sessions} consultation(s) à venir${d.therapeuticStarted ? ' · bloc thérapeutique ouvert' : ''}${d.medicationCleared ? ' · adaptation médicamenteuse autorisée' : ''}`) : null,
@@ -341,7 +344,7 @@ function demandRow(mount, d) {
 function relayModal(mount, d) {
   const input = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom)' , value: d.relais || '' });
   const coord = el('input', { class: 'field', placeholder: 'Coordonnées (e-mail/téléphone)', value: d.relaisCoord || '' });
-  const m = modal('Identifier le relais prescripteur', [el('label', { class: 'lbl' }, 'Nom'), input, el('label', { class: 'lbl' }, 'Coordonnées'), coord], [
+  const m = modal('Identifier le relais prescripteur', [...field('Nom', input), ...field('Coordonnées', coord)], [
     el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
     el('button', { class: 'btn btn-primary', onclick: () => { if (!input.value) { toast('Saisissez un relais.', 'err'); return; } d.relaisCoord = coord.value; store.setRelay(d.id, input.value); m.close(); toast('Relais enregistré.'); render(mount); } }, 'Enregistrer'),
   ]);

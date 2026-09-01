@@ -6,7 +6,7 @@
 // Toutes les opérations sont journalisées.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, toast, modal, confirmDialog, downloadText } from './dom.js';
+import { el, clear, field, fmtDateTime, fmtDate, fmtTime, toast, modal, confirmDialog, downloadText } from './dom.js';
 
 let selectedId = null;
 
@@ -140,7 +140,7 @@ function patientPanel(mount, patient) {
 // Annulation avec motif par le secrétariat.
 function cancelForReason(mount, a) {
   const reason = el('input', { class: 'field', placeholder: 'Motif (optionnel)' });
-  const m = modal(`Annuler — ${fmtDateTime(a.datetime)}`, [el('label', { class: 'lbl' }, 'Motif'), reason], [
+  const m = modal(`Annuler — ${fmtDateTime(a.datetime)}`, [...field('Motif', reason)], [
     el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Retour'),
     el('button', { class: 'btn btn-ghost danger', onclick: () => { store.cancelAppointment(a.id, { actor: 'secretariat', reason: reason.value }); m.close(); toast('Rendez-vous annulé.'); render(mount); } }, "Confirmer l'annulation"),
   ]);

@@ -434,6 +434,8 @@ export function submitDemand(payload) {
   const d = {
     id: uid('dem'), createdAt: new Date().toISOString(), status: 'deposee',
     circuitId: payload.circuitId, objectif: payload.objectif || '', origine: payload.origine || 'personnelle',
+    nom: payload.nom || '', prenom: payload.prenom || '', naissance: payload.naissance || '',
+    email: payload.email || '', tel: payload.tel || '',
     adressePar: payload.adressePar || '', relais: payload.relais || '', relaisCoord: payload.relaisCoord || '',
     dispos: payload.dispos || '', note: payload.note || '', ackLimites: !!payload.ackLimites,
     invitations: 0, priority: 0,

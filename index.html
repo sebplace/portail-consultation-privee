@@ -26,9 +26,42 @@
   <noscript>Ce prototype nécessite JavaScript.</noscript>
   <script type="module" src="assets/js/app.js"></script>
   <script>
+    // Numéro de version affiché dans la bannière de mise à jour (aligné sur app.js).
+    var APP_VERSION = 'v7';
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('sw.js').catch(function () {});
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+          function showUpdateBanner() {
+            if (document.getElementById('update-banner')) return;
+            var bar = document.createElement('div');
+            bar.id = 'update-banner';
+            bar.setAttribute('role', 'status');
+            bar.appendChild(document.createTextNode('Une nouvelle version est disponible (' + APP_VERSION + '). '));
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = 'Actualiser';
+            btn.onclick = function () {
+              if (reg.waiting) reg.waiting.postMessage('skipWaiting');
+              else location.reload();
+            };
+            bar.appendChild(btn);
+            document.body.appendChild(bar);
+          }
+          if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+          reg.addEventListener('updatefound', function () {
+            var nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', function () {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner();
+            });
+          });
+        }).catch(function () {});
+      });
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (refreshing) return;
+        refreshing = true;
+        location.reload();
       });
     }
   </script>

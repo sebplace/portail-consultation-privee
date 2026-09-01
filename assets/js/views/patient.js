@@ -4,7 +4,7 @@
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
 import { t } from '../i18n.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, weekdayShort, toast, modal, confirmDialog, downloadText, icsForAppointment } from './dom.js';
+import { el, clear, field, fmtDateTime, fmtDate, fmtTime, weekdayShort, toast, modal, confirmDialog, downloadText, icsForAppointment } from './dom.js';
 
 let currentPatientId = null;
 let weekOffset = 0; // navigation par semaine dans le sélecteur de créneaux
@@ -48,8 +48,8 @@ function loginView(mount) {
 function faqView(mount) {
   clear(mount);
   const items = [
-    ['Comment prendre un rendez-vous ?', "Connectez-vous avec votre code, cliquez sur « Choisir un rendez-vous » et sélectionnez un créneau proposé. Seuls les créneaux adaptés à votre suivi vous sont montrés."],
-    ['Puis-je déplacer ou annuler ?', "Oui, depuis « Mes rendez-vous », tant que le rendez-vous est à venir. Un déplacement reste dans une fourchette cohérente."],
+    ['Comment prendre un rendez-vous ?', "Connectez-vous avec votre code, cliquez sur « Choisir un rendez-vous » et sélectionnez un créneau proposé. Seuls les créneaux actuellement disponibles vous sont proposés."],
+    ['Puis-je déplacer ou annuler ?', "Oui, depuis « Mes rendez-vous », tant que le rendez-vous est à venir. Vous pouvez déplacer votre rendez-vous parmi les créneaux disponibles."],
     ["Qu'est-ce que la liste de désistement ?", "Si vous avez déjà un rendez-vous à venir, vous pouvez demander à être prévenu(e) si une place plus tôt se libère, selon vos préférences (jours, horaires, délai)."],
     ['Comment adresser une nouvelle demande ?', "Utilisez « Adresser une nouvelle demande ». Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai. Le médecin examine chaque demande."],
     ['Le médecin voit-il mes messages par e-mail ?', "Non. Les e-mails sont neutres et ne contiennent aucun contenu. Votre message reste dans l'espace sécurisé du médecin."],
@@ -210,9 +210,9 @@ function waitlistPrefsView(mount, patient) {
     el('label', { class: 'lbl' }, 'Jours acceptés'),
     el('div', { class: 'day-row', role: 'group', 'aria-label': 'Jours acceptés' }, dayBtns),
     el('div', { class: 'rule-grid' },
-      el('label', { class: 'lbl' }, 'À partir de'), from,
-      el('label', { class: 'lbl' }, "Jusqu'à"), to,
-      el('label', { class: 'lbl' }, 'Délai minimal pour être prévenu (h)'), delay,
+      ...field('À partir de', from),
+      ...field("Jusqu'à", to),
+      ...field('Délai minimal pour être prévenu (h)', delay),
     ),
     el('div', { class: 'row-actions end' },
       el('button', { class: 'btn btn-ghost', onclick: () => render(mount) }, 'Retour'),
@@ -251,7 +251,7 @@ function appointmentRow(mount, a, patient) {
 // --- Nouvelle demande : formulaire en étapes (stepper) ---
 function newDemandView(mount) {
   clear(mount);
-  const state = { step: 0, circuitId: store.circuits()[0].id, origine: 'personnelle', objectif: '', adressePar: '', relais: '', relaisCoord: '', dispos: '', note: '', ack: false };
+  const state = { step: 0, circuitId: store.circuits()[0].id, nom: '', prenom: '', naissance: '', email: '', tel: '', origine: 'personnelle', objectif: '', adressePar: '', relais: '', relaisCoord: '', dispos: '', note: '', ack: false };
   const steps = ['Circuit', 'Contexte', 'Disponibilités', 'Validation'];
   function head() {
     return el('div', { class: 'space-head' },
@@ -267,38 +267,52 @@ function newDemandView(mount) {
       const sel = el('select', { class: 'field' }, store.circuits().map((c) => el('option', { value: c.id, selected: c.id === state.circuitId ? '' : null }, c.label)));
       const explain = el('div', { class: 'notice info' }, circuit.description || '');
       sel.addEventListener('change', () => { state.circuitId = sel.value; explain.textContent = store.circuitById(sel.value).description || ''; });
-      card.append(el('h3', {}, 'Quel type de demande ?'), el('label', { class: 'lbl' }, 'Circuit demandé'), sel, explain,
+      card.append(el('h3', {}, 'Quel type de demande ?'), ...field('Circuit demandé', sel), explain,
         el('div', { class: 'notice' }, "Le dépôt ne garantit ni acceptation, ni rendez-vous, ni délai, ni suivi régulier. Ce dispositif ne remplace pas les services d'urgence (112)."));
       card.append(navRow(null, () => { state.circuitId = sel.value; state.step = 1; draw(); }));
     } else if (state.step === 1) {
+      const nom = el('input', { class: 'field', autocomplete: 'family-name', value: state.nom });
+      const prenom = el('input', { class: 'field', autocomplete: 'given-name', value: state.prenom });
+      const naissance = el('input', { class: 'field', type: 'date', autocomplete: 'bday', value: state.naissance });
+      const email = el('input', { class: 'field', type: 'email', autocomplete: 'email', placeholder: 'prenom.nom@exemple.be', value: state.email });
+      const tel = el('input', { class: 'field', type: 'tel', autocomplete: 'tel', placeholder: 'Téléphone de secours', value: state.tel });
       const origine = el('select', { class: 'field' }, el('option', { value: 'personnelle', selected: state.origine === 'personnelle' ? '' : null }, 'Démarche personnelle'), el('option', { value: 'adresse', selected: state.origine === 'adresse' ? '' : null }, 'Adressé(e) par un professionnel'));
       // Objectif principal en CHOIX FERMÉS (propre au circuit).
       const objSel = el('select', { class: 'field' }, (circuit.objectives || ['Autre']).map((o) => el('option', { value: o, selected: o === state.objectif ? '' : null }, o)));
       const adressePar = el('input', { class: 'field', placeholder: 'Professionnel qui adresse (si applicable)', value: state.adressePar });
       const relais = el('input', { class: 'field', placeholder: 'Relais prescripteur (nom), le cas échéant', value: state.relais });
       const relaisCoord = el('input', { class: 'field', placeholder: 'Coordonnées du relais (e-mail/téléphone)', value: state.relaisCoord });
-      card.append(el('h3', {}, 'Contexte'),
-        el('label', { class: 'lbl' }, 'Origine de la démarche'), origine,
-        el('label', { class: 'lbl' }, 'Objectif principal'), objSel,
-        el('label', { class: 'lbl' }, 'Adressé(e) par'), adressePar,
-        el('label', { class: 'lbl' }, 'Relais prescripteur éventuel'), relais,
-        el('label', { class: 'lbl' }, 'Coordonnées du relais'), relaisCoord);
-      card.append(navRow(() => { state.step = 0; draw(); }, () => { state.origine = origine.value; state.objectif = objSel.value; state.adressePar = adressePar.value; state.relais = relais.value; state.relaisCoord = relaisCoord.value; state.step = 2; draw(); }));
+      const save = () => { state.nom = nom.value.trim(); state.prenom = prenom.value.trim(); state.naissance = naissance.value; state.email = email.value.trim(); state.tel = tel.value.trim(); state.origine = origine.value; state.objectif = objSel.value; state.adressePar = adressePar.value; state.relais = relais.value; state.relaisCoord = relaisCoord.value; };
+      card.append(el('h3', {}, 'Vos coordonnées'),
+        el('p', { class: 'muted small' }, 'Nécessaires pour vous adresser une invitation sécurisée ou vous joindre en secours. Champs à titre de démonstration (données fictives).'),
+        ...field('Nom', nom), ...field('Prénom', prenom), ...field('Date de naissance', naissance),
+        ...field('E-mail', email), ...field('Téléphone de secours', tel),
+        el('h3', {}, 'Contexte'),
+        ...field('Origine de la démarche', origine),
+        ...field('Objectif principal', objSel),
+        ...field('Adressé(e) par', adressePar),
+        ...field('Relais prescripteur éventuel', relais),
+        ...field('Coordonnées du relais', relaisCoord));
+      card.append(navRow(() => { save(); state.step = 0; draw(); }, () => {
+        save();
+        if (!state.nom || !state.prenom || !state.email) { toast('Nom, prénom et e-mail sont nécessaires pour vous recontacter.', 'err'); return; }
+        state.step = 2; draw();
+      }));
     } else if (state.step === 2) {
       const dispos = el('input', { class: 'field', placeholder: 'Vos disponibilités générales', value: state.dispos });
       const note = el('textarea', { class: 'field', rows: '3', placeholder: 'Précisions libres (facultatif)' }, state.note);
-      card.append(el('h3', {}, 'Disponibilités'), el('label', { class: 'lbl' }, 'Disponibilités'), dispos, el('label', { class: 'lbl' }, 'Précisions libres'), note);
+      card.append(el('h3', {}, 'Disponibilités'), ...field('Disponibilités générales', dispos), ...field('Précisions libres', note));
       card.append(navRow(() => { state.step = 1; draw(); }, () => { state.dispos = dispos.value; state.note = note.value; state.step = 3; draw(); }));
     } else {
       const c = circuit;
       const ack = el('input', { type: 'checkbox' });
       ack.checked = state.ack;
       card.append(el('h3', {}, 'Validation'),
-        el('div', { class: 'note-box' }, `Circuit : ${c.label}\nOrigine : ${state.origine}\nObjectif : ${state.objectif || '—'}\nRelais : ${state.relais || '—'}${state.relaisCoord ? ' (' + state.relaisCoord + ')' : ''}`),
+        el('div', { class: 'note-box' }, `Demandeur : ${state.prenom} ${state.nom}${state.naissance ? ' (né·e le ' + state.naissance + ')' : ''}\nContact : ${state.email}${state.tel ? ' · ' + state.tel : ''}\nCircuit : ${c.label}\nOrigine : ${state.origine}\nObjectif : ${state.objectif || '—'}\nRelais : ${state.relais || '—'}${state.relaisCoord ? ' (' + state.relaisCoord + ')' : ''}`),
         el('label', { class: 'check' }, ack, " Je confirme avoir compris les limites du dispositif et les consignes d'urgence (ce canal ne remplace pas le 112)."));
       const submit = el('button', { class: 'btn btn-primary', onclick: () => {
         if (!ack.checked) { toast('Merci de confirmer la prise de connaissance des limites et consignes d\'urgence.', 'err'); return; }
-        const d = store.submitDemand({ circuitId: state.circuitId, origine: state.origine, objectif: state.objectif, adressePar: state.adressePar, relais: state.relais, relaisCoord: state.relaisCoord, dispos: state.dispos, note: state.note, ackLimites: true });
+        const d = store.submitDemand({ circuitId: state.circuitId, nom: state.nom, prenom: state.prenom, naissance: state.naissance, email: state.email, tel: state.tel, origine: state.origine, objectif: state.objectif, adressePar: state.adressePar, relais: state.relais, relaisCoord: state.relaisCoord, dispos: state.dispos, note: state.note, ackLimites: true });
         demandSubmittedView(mount, d);
       } }, 'Transmettre la demande');
       card.append(el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-ghost', onclick: () => { state.step = 2; draw(); } }, 'Précédent'), submit));

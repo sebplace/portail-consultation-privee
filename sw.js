@@ -3,7 +3,7 @@
 // clinique. Les données de démonstration vivent dans localStorage (jamais dans ce cache),
 // et aucune requête réseau applicative n'est interceptée ni stockée : seules les
 // ressources statiques listées ci-dessous (HTML/CSS/JS/icône/manifest) sont servies.
-const CACHE = 'pcp-shell-v6';
+const CACHE = 'pcp-shell-v7';
 const SHELL = [
   './',
   './index.html',
@@ -25,7 +25,13 @@ const SHELL = [
 const SHELL_URLS = new Set(SHELL.map((p) => new URL(p, self.registration.scope).href));
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // On ne prend PAS le contrôle immédiatement : le nouveau worker attend afin que
+  // la page puisse afficher une bannière « Une nouvelle version est disponible ».
+  // L'activation se fait sur demande (message 'skipWaiting' déclenché par le bouton).
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+});
+self.addEventListener('message', (e) => {
+  if (e.data === 'skipWaiting') self.skipWaiting();
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
