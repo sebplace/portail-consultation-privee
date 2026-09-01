@@ -18,22 +18,48 @@ function parseBoundary(v, endOfDay) {
   return new Date(v);
 }
 
-export function isClosed(date, closures) {
+// Une fermeture récurrente hebdomadaire couvre chaque semaine un jour (ou demi-journée).
+// { recurring:'weekly', weekday:1..7, part:'full'|'am'|'pm', label }
+function matchesRecurring(date, c) {
+  if (c.recurring !== 'weekly') return false;
+  if (isoWeekday(date) !== Number(c.weekday)) return false;
+  const h = date.getHours() + date.getMinutes() / 60;
+  if (c.part === 'am') return h < 12;
+  if (c.part === 'pm') return h >= 12;
+  return true; // journée entière
+}
+
+function matchesDated(date, c) {
+  if (c.recurring) return false;
+  const from = parseBoundary(c.from, false).getTime();
+  const to = parseBoundary(c.to, true).getTime();
   const t = date.getTime();
-  return (closures || []).some((c) => {
-    const from = parseBoundary(c.from, false).getTime();
-    const to = parseBoundary(c.to, true).getTime();
-    return t >= from && t <= to;
-  });
+  return t >= from && t <= to;
+}
+
+export function isClosed(date, closures) {
+  return (closures || []).some((c) => (c.recurring ? matchesRecurring(date, c) : matchesDated(date, c)));
 }
 
 export function closureAt(date, closures) {
-  return (closures || []).find((c) => {
-    const from = parseBoundary(c.from, false).getTime();
-    const to = parseBoundary(c.to, true).getTime();
-    const t = date.getTime();
-    return t >= from && t <= to;
-  }) || null;
+  return (closures || []).find((c) => (c.recurring ? matchesRecurring(date, c) : matchesDated(date, c))) || null;
+}
+
+// Applique les changements de trame datés (overrides) pour une date/kind donnés.
+// Un changement n'est effectif qu'à partir de sa date d'effet : avant, l'ancienne
+// trame reste en vigueur (jamais de modification rétroactive).
+function applyTrameChanges(baseTimes, changes, cursor, weekday, kind) {
+  if (!changes || !changes.length) return baseTimes.slice();
+  const ymdCursor = ymd(cursor);
+  const set = new Set(baseTimes);
+  for (const ch of changes) {
+    if (Number(ch.weekday) !== weekday) continue;
+    if ((ch.kind || 'ordinaire') !== kind) continue;
+    if (ch.effectiveDate && ch.effectiveDate > ymdCursor) continue; // pas encore effectif
+    if (ch.action === 'add') set.add(ch.time);
+    else if (ch.action === 'remove') set.delete(ch.time);
+  }
+  return [...set].sort();
 }
 
 // Un créneau candidat entre-t-il en conflit avec un rdv actif (planifié) ou une urgence encodée ?
@@ -66,10 +92,11 @@ export function generateOpenSlots({
   const isConverted = (start) => converted.has(start.toISOString());
   while (cursor <= end) {
     const wd = isoWeekday(cursor);
-    const publicTimes = (doctor.weeklyTemplate[wd] || []).map((t) => ({ t, kind: 'public' }));
+    const changes = doctor.slotChanges || [];
+    const publicTimes = applyTrameChanges(doctor.weeklyTemplate[wd] || [], changes, cursor, wd, 'ordinaire').map((t) => ({ t, kind: 'public' }));
     const emgTimes = includeEmergency ? (doctor.emergencyTemplate[wd] || []).map((t) => ({ t, kind: 'emergency' })) : [];
     const protTimes = includeProtected ? (protectedTpl[wd] || []).map((t) => ({ t, kind: 'protected' })) : [];
-    const avisTimes = (avisTpl[wd] || []).map((t) => ({ t, kind: 'avis' }));
+    const avisTimes = applyTrameChanges(avisTpl[wd] || [], changes, cursor, wd, 'avis').map((t) => ({ t, kind: 'avis' }));
     for (const { t, kind } of [...publicTimes, ...emgTimes, ...protTimes, ...avisTimes]) {
       const start = atTime(cursor, t);
       // Un créneau protégé n'est jamais public.
@@ -117,6 +144,9 @@ export function generateOpenSlots({
 // Rendez-vous existants (planifiés) tombant dans une fermeture donnée — pour la
 // "liste à traiter" : on NE déplace jamais automatiquement.
 export function appointmentsInClosure(appointments, closure) {
+  if (closure.recurring) {
+    return (appointments || []).filter((a) => a.status === 'planifie' && matchesRecurring(new Date(a.datetime), closure));
+  }
   const from = parseBoundary(closure.from, false).getTime();
   const to = parseBoundary(closure.to, true).getTime();
   return (appointments || []).filter((a) => {

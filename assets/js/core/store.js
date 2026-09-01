@@ -40,8 +40,18 @@ export function lastUndoLabel() { return undoLabels[undoLabels.length - 1] || ''
 export function undo() {
   if (!undoStack.length) return { error: 'empty' };
   const snap = undoStack.pop(); const label = undoLabels.pop();
-  try { state = JSON.parse(snap); localStorage.setItem(KEY, JSON.stringify(state)); listeners.forEach((fn) => fn(state)); }
+  let restored;
+  try { restored = JSON.parse(snap); }
   catch (e) { return { error: 'restore' }; }
+  // Garde-fou : un undo ne supprime JAMAIS une trace.
+  // On conserve le journal courant (append-only) et on ajoute une opération corrective,
+  // elle-même journalisée. Les données métier reviennent à l'état antérieur, pas le journal.
+  const preservedLog = get().log.slice();
+  preservedLog.push({ ts: new Date().toISOString(), actor: 'systeme', action: 'annulation corrective (undo)', detail: label });
+  restored.log = preservedLog;
+  state = restored;
+  localStorage.setItem(KEY, JSON.stringify(state));
+  listeners.forEach((fn) => fn(state));
   return { ok: true, label };
 }
 
@@ -741,28 +751,67 @@ export function prefillHolidays({ now = new Date() } = {}) {
   return added;
 }
 
-// --- Éditeur de trame (créneaux ordinaires / avis) ---
+// --- Éditeur de trame (créneaux ordinaires / avis) avec DATE D'EFFET ---
+// Une modification n'est jamais rétroactive : avant sa date d'effet, l'ancienne trame
+// reste en vigueur. Un changement daté dans le futur est stocké comme "override" et
+// appliqué par le moteur à partir de la date d'effet. Un changement immédiat (aujourd'hui
+// ou passé) mute la trame de base. Les rendez-vous existants ne sont jamais déplacés.
 function normalizeTime(t) { return /^\d{2}:\d{2}$/.test(t) ? t : null; }
-export function addSlot(weekday, time, kind = 'ordinaire') {
-  const t = normalizeTime(time); if (!t) return { error: 'format' };
-  const tpl = kind === 'avis' ? doctor().avisTemplate : doctor().weeklyTemplate;
-  if (!tpl[weekday]) tpl[weekday] = [];
-  if (tpl[weekday].includes(t)) return { error: 'exists' };
-  checkpoint('ajout créneau trame');
-  tpl[weekday].push(t); tpl[weekday].sort();
-  logOp('medecin', 'créneau ajouté', `${kind} ${weekday} ${t}`);
-  save();
-  return { ok: true };
+function ensureSlotChanges() { const d = doctor(); if (!Array.isArray(d.slotChanges)) d.slotChanges = []; return d.slotChanges; }
+function todayYmd(now = new Date()) { return rules.ymd(now); }
+
+// Rendez-vous futurs planifiés qui deviennent incompatibles si on RETIRE un créneau
+// (weekday + heure) à partir d'une date d'effet. On ne les déplace jamais.
+export function incompatibleAfterSlotRemoval(weekday, time, kind = 'ordinaire', effectiveDate = null, now = new Date()) {
+  const eff = effectiveDate || todayYmd(now);
+  return get().appointments.filter((a) => {
+    if (a.status !== 'planifie') return false;
+    const dt = new Date(a.datetime);
+    if (dt <= now) return false;
+    if ((a.datetime.slice(0, 10)) < eff) return false; // avant la date d'effet : conservé
+    const wd = dt.getDay() === 0 ? 7 : dt.getDay();
+    if (wd !== Number(weekday)) return false;
+    const hhmm = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+    return hhmm === time;
+  });
 }
-export function removeSlot(weekday, time, kind = 'ordinaire') {
+
+export function trameChanges() { return (doctor().slotChanges || []).slice(); }
+
+export function addSlot(weekday, time, kind = 'ordinaire', { effectiveDate = null } = {}) {
+  const t = normalizeTime(time); if (!t) return { error: 'format' };
+  const today = todayYmd();
+  const immediate = !effectiveDate || effectiveDate <= today;
   const tpl = kind === 'avis' ? doctor().avisTemplate : doctor().weeklyTemplate;
-  if (!tpl[weekday] || !tpl[weekday].includes(time)) return { error: 'notfound' };
-  checkpoint('retrait créneau trame');
-  tpl[weekday] = tpl[weekday].filter((x) => x !== time);
-  if (tpl[weekday].length === 0) delete tpl[weekday];
-  logOp('medecin', 'créneau retiré', `${kind} ${weekday} ${time}`);
+  if (immediate && tpl[weekday] && tpl[weekday].includes(t)) return { error: 'exists' };
+  checkpoint('ajout créneau trame');
+  if (immediate) {
+    if (!tpl[weekday]) tpl[weekday] = [];
+    tpl[weekday].push(t); tpl[weekday].sort();
+  } else {
+    ensureSlotChanges().push({ weekday: Number(weekday), time: t, kind, action: 'add', effectiveDate });
+  }
+  logOp('medecin', 'créneau ajouté', `${kind} ${weekday} ${t}${immediate ? '' : ' (effet ' + effectiveDate + ')'}`);
   save();
-  return { ok: true };
+  return { ok: true, effectiveDate: immediate ? today : effectiveDate };
+}
+
+export function removeSlot(weekday, time, kind = 'ordinaire', { effectiveDate = null } = {}) {
+  const today = todayYmd();
+  const immediate = !effectiveDate || effectiveDate <= today;
+  const tpl = kind === 'avis' ? doctor().avisTemplate : doctor().weeklyTemplate;
+  if (immediate && (!tpl[weekday] || !tpl[weekday].includes(time))) return { error: 'notfound' };
+  const incompatibles = incompatibleAfterSlotRemoval(weekday, time, kind, effectiveDate);
+  checkpoint('retrait créneau trame');
+  if (immediate) {
+    tpl[weekday] = tpl[weekday].filter((x) => x !== time);
+    if (tpl[weekday].length === 0) delete tpl[weekday];
+  } else {
+    ensureSlotChanges().push({ weekday: Number(weekday), time, kind, action: 'remove', effectiveDate });
+  }
+  logOp('medecin', 'créneau retiré', `${kind} ${weekday} ${time}${immediate ? '' : ' (effet ' + effectiveDate + ')'} · ${incompatibles.length} rdv incompatible(s), non déplacé(s)`);
+  save();
+  return { ok: true, effectiveDate: immediate ? today : effectiveDate, incompatibles };
 }
 export function setAvisCapacity({ base, max }) {
   checkpoint('capacité avis');

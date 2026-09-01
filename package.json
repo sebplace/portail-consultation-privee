@@ -5,9 +5,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/rules.test.mjs && node tests/store.test.mjs",
+    "test": "node tests/rules.test.mjs && node tests/store.test.mjs && node tests/e2e.test.mjs",
     "test:engine": "node tests/rules.test.mjs",
     "test:acceptance": "node tests/store.test.mjs",
+    "test:e2e": "node tests/e2e.test.mjs",
+    "check": "node check.mjs",
     "serve": "node tests/serve.mjs"
   },
   "license": "UNLICENSED"

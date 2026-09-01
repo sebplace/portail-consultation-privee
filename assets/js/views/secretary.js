@@ -6,7 +6,7 @@
 // Toutes les opérations sont journalisées.
 import * as store from '../core/store.js';
 import * as rules from '../core/rules.js';
-import { el, clear, fmtDateTime, fmtDate, fmtTime, toast, modal, downloadText } from './dom.js';
+import { el, clear, fmtDateTime, fmtDate, fmtTime, toast, modal, confirmDialog, downloadText } from './dom.js';
 
 let selectedId = null;
 
@@ -87,6 +87,8 @@ function patientPanel(mount, patient) {
     .filter((a) => ['planifie', 'effectue', 'absent'].includes(a.status))
     .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
   const onWaitlist = store.waitlist().some((w) => w.patientId === patient.id);
+  // Garde-fou désistement : accessible uniquement si un rendez-vous futur planifié existe.
+  const hasFuturePlanned = appts.some((a) => new Date(a.datetime) > now && a.status === 'planifie');
   const emgAuths = store.pendingEmergencyAuth().filter((e) => e.patientId === patient.id);
 
   const rows = appts.map((a) => {
@@ -112,11 +114,13 @@ function patientPanel(mount, patient) {
     el('div', { class: 'muted small' }, `code ${patient.code}`),
     el('div', { class: 'row-actions wrap top' },
       el('button', { class: 'btn btn-primary', onclick: () => bookForView(mount, patient) }, 'Réserver'),
-      el('button', { class: 'btn btn-ghost', onclick: () => {
-        if (onWaitlist) { store.leaveWaitlist(patient.id); toast('Retiré du désistement.'); }
-        else { const r = store.joinWaitlist(patient.id, { actor: 'secretariat' }); if (r && r.error) { toast(r.message, 'err'); return; } toast('Inscrit au désistement.'); }
-        render(mount);
-      } }, onWaitlist ? 'Retirer du désistement' : 'Inscrire au désistement'),
+      (onWaitlist || hasFuturePlanned)
+        ? el('button', { class: 'btn btn-ghost', onclick: () => {
+            if (onWaitlist) { store.leaveWaitlist(patient.id); toast('Retiré du désistement.'); }
+            else { const r = store.joinWaitlist(patient.id, { actor: 'secretariat' }); if (r && r.error) { toast(r.message, 'err'); return; } toast('Inscrit au désistement.'); }
+            render(mount);
+          } }, onWaitlist ? 'Retirer du désistement' : 'Inscrire au désistement')
+        : el('button', { class: 'btn btn-ghost', disabled: '', title: "Uniquement pour une personne ayant un rendez-vous à venir à avancer." }, 'Désistement indisponible'),
       el('button', { class: 'btn btn-ghost', onclick: () => toast("Lien d'accès (ré)envoyé (simulation).") }, "Aider à l'accès"),
     ),
     emgAuths.length ? el('div', { class: 'notice info' },
@@ -152,8 +156,8 @@ function dayAgenda(mount) {
     el('div', { class: 'card-head' },
       el('h3', {}, `Agenda du jour — ${fmtDate(now)}`),
       el('div', { class: 'row-actions' },
-        el('button', { class: 'btn btn-ghost', onclick: () => window.print() }, '🖨️ Imprimer'),
-        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('agenda-du-jour.txt', `Agenda du ${fmtDate(now)}\n\n` + (rows.join('\n') || 'Aucun rendez-vous.'), 'text/plain;charset=utf-8'); toast('Agenda exporté.'); } }, 'Exporter'),
+        el('button', { class: 'btn btn-ghost', onclick: () => confirmDialog("L'impression de l'agenda contient des données personnelles (fictives ici). En production, ces impressions devront être encadrées. Continuer ?", { okLabel: 'Continuer' }).then((ok) => { if (ok) window.print(); }) }, '🖨️ Imprimer'),
+        el('button', { class: 'btn btn-ghost', onclick: () => confirmDialog("L'export de l'agenda contient des données personnelles (fictives ici). En production, ces exports devront être encadrés. Continuer ?", { okLabel: 'Continuer' }).then((ok) => { if (ok) { downloadText('agenda-du-jour.txt', `Agenda du ${fmtDate(now)}\n\n` + (rows.join('\n') || 'Aucun rendez-vous.'), 'text/plain;charset=utf-8'); toast('Agenda exporté.'); } }) }, 'Exporter'),
       ),
     ),
     today.length ? el('div', { class: 'list' }, today.map((a) => el('div', { class: 'row-item' },
@@ -170,6 +174,32 @@ function head(mount) {
   ));
 }
 
+// Bandeau global des urgences 12:15 autorisées par le médecin (accord tracé).
+// Le secrétariat ne peut encoder l'urgence qu'ici, après accord explicite et journalisé.
+function emergencyBanner(mount) {
+  const auths = store.pendingEmergencyAuth();
+  if (!auths.length) return null;
+  return el('div', { class: 'notice warn' },
+    el('div', {}, el('strong', {}, `Urgence 12:15 — ${auths.length} accord(s) du médecin à encoder`)),
+    el('div', { class: 'muted small' }, "Ce créneau n'est jamais proposé automatiquement. Il s'encode uniquement après accord explicite et tracé du médecin."),
+    el('div', { class: 'row-actions wrap', style: 'margin-top:6px' }, auths.map((e) => {
+      const p = store.patientById(e.patientId);
+      return el('button', { class: 'btn btn-primary', onclick: () => {
+        const r = store.useEmergencyAuth(e.id, { actor: 'secretariat' });
+        if (r && r.error) toast('Autorisation invalide.', 'err'); else toast('Urgence 12:15 encodée.');
+        render(mount);
+      } }, `Encoder ${p ? p.displayName : e.patientId} — ${fmtDateTime(e.datetime)}`);
+    })),
+  );
+}
+
+// Mode "appel téléphonique" : le secrétariat agit à la place de la personne qui appelle.
+function phoneModeNote() {
+  return el('div', { class: 'notice info small' },
+    el('strong', {}, 'Mode appel téléphonique'), ' — ',
+    "recherchez la personne qui appelle, puis réservez, déplacez, annulez ou inscrivez-la au désistement à sa place. Solution de secours lorsqu'elle ne peut pas utiliser le portail.");
+}
+
 function restrictionsBox() {
   return el('div', { class: 'card' },
     el('h3', {}, 'Périmètre du secrétariat'),
@@ -180,11 +210,14 @@ function restrictionsBox() {
 
 function render(mount) {
   clear(mount); store.purgeWaitlist(); head(mount);
+  const banner = emergencyBanner(mount);
+  if (banner) mount.appendChild(banner);
   if (selectedId) {
     const p = store.patientById(selectedId);
     if (p) { mount.appendChild(patientPanel(mount, p)); return; }
     selectedId = null;
   }
+  mount.appendChild(phoneModeNote());
   mount.appendChild(dayAgenda(mount));
   mount.appendChild(searchCard(mount));
   mount.appendChild(restrictionsBox());

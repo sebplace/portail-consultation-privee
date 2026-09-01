@@ -56,7 +56,7 @@ function aujourdhuiTab(mount) {
   const next = store.appointments().filter((a) => a.status === 'planifie' && new Date(a.datetime) > now).sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
   return el('div', {},
     el('div', { class: 'card' },
-      el('div', { class: 'card-head' }, el('h3', {}, `Aujourd'hui — ${fmtDate(now)}`), el('button', { class: 'btn btn-ghost', onclick: () => window.print() }, '🖨️ Imprimer')),
+      el('div', { class: 'card-head' }, el('h3', {}, `Aujourd'hui — ${fmtDate(now)}`), el('button', { class: 'btn btn-ghost', onclick: () => confirmPersonalData("L'impression de la journée", () => window.print()) }, '🖨️ Imprimer')),
       next ? el('div', { class: 'notice info' }, `Prochain : ${fmtTime(next.datetime)} — ${labelFor(next)}`) : null,
       today.length ? el('div', { class: 'list' }, today.map((a) => el('div', { class: 'row-item' },
         el('div', {}, el('div', { class: 'row-title' }, `${fmtTime(a.datetime)} — ${labelFor(a)}`),
@@ -512,12 +512,15 @@ function dispoTab(mount) {
   const kind = el('select', { class: 'field mini' },
     el('option', { value: 'jour' }, 'Journée(s) entière(s)'),
     el('option', { value: 'demi' }, 'Demi-journée (matin/après-midi)'),
-    el('option', { value: 'creneau' }, 'Créneau précis'));
+    el('option', { value: 'creneau' }, 'Créneau précis'),
+    el('option', { value: 'recurrent' }, 'Récurrente (chaque semaine)'));
   const dateFrom = el('input', { class: 'field mini', type: 'date' });
   const dateTo = el('input', { class: 'field mini', type: 'date' });
   const half = el('select', { class: 'field mini' }, el('option', { value: 'am' }, 'Matin (jusqu\'à 12:00)'), el('option', { value: 'pm' }, 'Après-midi (dès 12:00)'));
   const slotDate = el('input', { class: 'field mini', type: 'date' });
   const slotTime = el('input', { class: 'field mini', type: 'time' });
+  const recWd = el('select', { class: 'field mini' }, [1, 2, 3, 4, 5, 6, 7].map((wd) => el('option', { value: String(wd) }, weekdayLabel(wd))));
+  const recPart = el('select', { class: 'field mini' }, el('option', { value: 'full' }, 'Journée entière'), el('option', { value: 'am' }, 'Matin'), el('option', { value: 'pm' }, 'Après-midi'));
   const label = el('input', { class: 'field', placeholder: 'Motif (congé, formation, fermeture…)' });
 
   const dynamic = el('div', {});
@@ -525,6 +528,7 @@ function dispoTab(mount) {
     clear(dynamic);
     if (kind.value === 'jour') dynamic.append(el('label', { class: 'lbl' }, 'Du'), dateFrom, el('label', { class: 'lbl' }, 'Au'), dateTo);
     else if (kind.value === 'demi') dynamic.append(el('label', { class: 'lbl' }, 'Date'), dateFrom, el('label', { class: 'lbl' }, 'Demi-journée'), half);
+    else if (kind.value === 'recurrent') dynamic.append(el('label', { class: 'lbl' }, 'Chaque'), recWd, el('label', { class: 'lbl' }, 'Portée'), recPart);
     else dynamic.append(el('label', { class: 'lbl' }, 'Date'), slotDate, el('label', { class: 'lbl' }, 'Heure'), slotTime);
   };
   kind.addEventListener('change', drawDynamic); setTimeout(drawDynamic, 0);
@@ -539,6 +543,8 @@ function dispoTab(mount) {
       closure = half.value === 'am'
         ? { from: `${dateFrom.value}T00:00:00`, to: `${dateFrom.value}T12:00:00`, label: label.value || 'matinée' }
         : { from: `${dateFrom.value}T12:00:00`, to: `${dateFrom.value}T23:59:00`, label: label.value || 'après-midi' };
+    } else if (kind.value === 'recurrent') {
+      closure = { recurring: 'weekly', weekday: Number(recWd.value), part: recPart.value, label: label.value || 'fermeture récurrente' };
     } else {
       if (!slotDate.value || !slotTime.value) { toast('Renseignez date et heure.', 'err'); return; }
       const [hh, mm] = slotTime.value.split(':').map(Number);
@@ -557,7 +563,7 @@ function dispoTab(mount) {
     el('p', { class: 'muted small' }, `Durée des consultations : ${d.slotDurationMin} min · Intervalle entre les créneaux (min) : ${d.slotDurationMin} · Horizon : ${d.horizonWeeks} semaines`),
     el('div', { class: 'list' }, wdList.map((wd) => el('div', { class: 'row-item stack' },
       el('div', {}, el('div', { class: 'row-title' }, weekdayLabel(wd) + ' — suivis ordinaires'),
-        el('div', { class: 'row-actions wrap', style: 'margin-top:6px' }, d.weeklyTemplate[wd].map((t) => el('span', { class: 'pill' }, t, ' ', el('button', { class: 'pill-x', title: 'Retirer', onclick: () => { store.removeSlot(wd, t, 'ordinaire'); toast('Créneau retiré.'); render(mount); } }, '×'))))),
+        el('div', { class: 'row-actions wrap', style: 'margin-top:6px' }, d.weeklyTemplate[wd].map((t) => el('span', { class: 'pill' }, t, ' ', el('button', { class: 'pill-x', title: 'Retirer (avec date d\'effet)', onclick: () => removeSlotModal(mount, wd, t, 'ordinaire') }, '×'))))),
     ))),
     el('div', { class: 'notice info small' }, `Créneaux d'avis dédiés (réservés aux circuits, exclus des suivis ordinaires) : ${Object.entries(d.avisTemplate).map(([wd, tt]) => weekdayLabel(Number(wd)) + ' ' + tt.join(',')).join(' ; ')}. Base ${d.avisCapacity.base} séances / 4 semaines.`),
     el('div', { class: 'notice info small' }, `Créneau d'urgence (invisible au public) : ${Object.entries(d.emergencyTemplate).map(([wd, tt]) => weekdayLabel(Number(wd)) + ' ' + tt.join(',')).join(' ; ')}.`),
@@ -579,8 +585,11 @@ function dispoTab(mount) {
     el('div', { class: 'row-actions end' }, el('button', { class: 'btn btn-primary', onclick: addClosure }, 'Ajouter la fermeture')),
     d.closures.length ? el('div', { class: 'list' }, d.closures.map((c, i) => {
       const impacted = avail.appointmentsInClosure(store.appointments(), c);
-      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(c.from) && /^\d{4}-\d{2}-\d{2}$/.test(c.to);
-      const span = dateOnly ? (c.from === c.to ? fmtDate(c.from) : `${fmtDate(c.from)} → ${fmtDate(c.to)}`) : `${fmtDateTime(c.from)} → ${fmtDateTime(c.to)}`;
+      const partLbl = { full: 'journée', am: 'matin', pm: 'après-midi' };
+      const dateOnly = !c.recurring && /^\d{4}-\d{2}-\d{2}$/.test(c.from) && /^\d{4}-\d{2}-\d{2}$/.test(c.to);
+      const span = c.recurring
+        ? `Chaque ${weekdayLabel(Number(c.weekday))} (${partLbl[c.part] || 'journée'})`
+        : (dateOnly ? (c.from === c.to ? fmtDate(c.from) : `${fmtDate(c.from)} → ${fmtDate(c.to)}`) : `${fmtDateTime(c.from)} → ${fmtDateTime(c.to)}`);
       return el('div', { class: 'row-item stack' },
         el('div', {}, el('div', { class: 'row-title' }, `${span} · ${c.label}`),
           impacted.length ? el('div', { class: 'notice info small' }, `${impacted.length} rendez-vous à traiter (bloque toute nouvelle réservation, sans déplacer personne) :`,
@@ -592,30 +601,83 @@ function dispoTab(mount) {
   return el('div', {}, trame, closures);
 }
 
-// Éditeur : ajouter un créneau (ordinaire ou avis) à la trame.
+// Éditeur : ajouter un créneau (ordinaire ou avis) à la trame, avec DATE D'EFFET.
 function slotEditorModal(mount) {
+  const today = new Date().toISOString().slice(0, 10);
   const wdSel = el('select', { class: 'field mini' }, [1, 2, 3, 4, 5, 6, 7].map((wd) => el('option', { value: String(wd), selected: wd === 2 ? '' : null }, weekdayLabel(wd))));
   const timeInput = el('input', { class: 'field mini', type: 'time', value: '13:00' });
   const kindSel = el('select', { class: 'field mini' }, el('option', { value: 'ordinaire' }, 'Suivi ordinaire'), el('option', { value: 'avis' }, "Avis (circuits)"));
+  const effInput = el('input', { class: 'field mini', type: 'date', value: today, min: today });
   const m = modal('Ajouter un créneau à la trame', [
-    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Jour'), wdSel, el('label', { class: 'lbl' }, 'Heure'), timeInput, el('label', { class: 'lbl' }, 'Type'), kindSel),
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Jour'), wdSel, el('label', { class: 'lbl' }, 'Heure'), timeInput, el('label', { class: 'lbl' }, 'Type'), kindSel, el('label', { class: 'lbl' }, "Date d'effet"), effInput),
+    el('p', { class: 'muted small' }, "La modification prend effet à cette date. Elle n'est jamais rétroactive : les créneaux et rendez-vous antérieurs restent inchangés."),
   ], [
     el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
-    el('button', { class: 'btn btn-primary', onclick: () => { const r = store.addSlot(Number(wdSel.value), timeInput.value, kindSel.value); if (r.error) toast(r.error === 'exists' ? 'Créneau déjà présent.' : 'Format invalide.', 'err'); else { m.close(); toast('Créneau ajouté.'); render(mount); } } }, 'Ajouter'),
+    el('button', { class: 'btn btn-primary', onclick: () => {
+      const r = store.addSlot(Number(wdSel.value), timeInput.value, kindSel.value, { effectiveDate: effInput.value || null });
+      if (r.error) toast(r.error === 'exists' ? 'Créneau déjà présent.' : 'Format invalide.', 'err');
+      else { m.close(); toast(`Créneau ajouté (effet ${r.effectiveDate}).`); render(mount); }
+    } }, 'Ajouter'),
   ]);
 }
 
-// Éditeur : régler la capacité avis (base / plafond).
-function capacityModal(mount) {
-  const cap = store.doctor().avisCapacity;
-  const base = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.base) });
-  const max = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.max) });
-  const m = modal('Régler la capacité avis (4 semaines)', [
-    el('p', { class: 'muted small' }, 'Base : nombre de séances d\'avis visées. Plafond : maximum absolu (extensions ponctuelles comprises).'),
-    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Base'), base, el('label', { class: 'lbl' }, 'Plafond'), max),
+// Retrait d'un créneau : date d'effet + APERÇU D'IMPACT (rdv devenus incompatibles,
+// jamais déplacés) + CONFIRMATION. La suppression est journalisée.
+function removeSlotModal(mount, weekday, time, kind) {
+  const today = new Date().toISOString().slice(0, 10);
+  const effInput = el('input', { class: 'field mini', type: 'date', value: today, min: today });
+  const impactBox = el('div', { class: 'notice info small' });
+  const refresh = () => {
+    clear(impactBox);
+    const list = store.incompatibleAfterSlotRemoval(weekday, time, kind, effInput.value || null);
+    if (!list.length) { impactBox.append(el('div', {}, 'Aucun rendez-vous futur ne devient incompatible.')); return; }
+    impactBox.append(
+      el('div', {}, `${list.length} rendez-vous deviennent incompatibles (ils ne seront pas déplacés — à traiter manuellement) :`),
+      el('ul', { class: 'mini-list' }, list.map((a) => el('li', {}, `${fmtDateTime(a.datetime)} — ${labelFor(a)}`))),
+    );
+  };
+  effInput.addEventListener('change', refresh); setTimeout(refresh, 0);
+  const m = modal(`Retirer ${weekdayLabel(weekday)} ${time}`, [
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, "Date d'effet"), effInput),
+    el('p', { class: 'muted small' }, "Aucun rendez-vous existant n'est déplacé. Le retrait empêche seulement de nouvelles réservations sur ce créneau à partir de la date d'effet."),
+    impactBox,
   ], [
     el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
-    el('button', { class: 'btn btn-primary', onclick: () => { store.setAvisCapacity({ base: base.value, max: max.value }); m.close(); toast('Capacité mise à jour.'); render(mount); } }, 'Enregistrer'),
+    el('button', { class: 'btn btn-primary', onclick: () => {
+      const r = store.removeSlot(weekday, time, kind, { effectiveDate: effInput.value || null });
+      if (r.error) { toast('Créneau introuvable.', 'err'); return; }
+      m.close();
+      toast(r.incompatibles && r.incompatibles.length ? `Créneau retiré. ${r.incompatibles.length} rdv à traiter (non déplacés).` : `Créneau retiré (effet ${r.effectiveDate}).`, r.incompatibles && r.incompatibles.length ? 'err' : 'ok');
+      render(mount);
+    } }, 'Confirmer le retrait'),
+  ]);
+}
+
+// Éditeur : régler la capacité avis (base / plafond) avec APERÇU D'IMPACT et CONFIRMATION.
+function capacityModal(mount) {
+  const cap = store.doctor().avisCapacity;
+  const info = store.avisCapacityInfo();
+  const base = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.base) });
+  const max = el('input', { class: 'field mini', type: 'number', min: '0', value: String(cap.max) });
+  const preview = el('div', { class: 'notice info small' });
+  const maxExtra = cap.maxExtra != null ? cap.maxExtra : 2;
+  const refresh = () => {
+    clear(preview);
+    const nb = Number(base.value), nm = Number(max.value);
+    const lines = [`Séances d'avis déjà planifiées (fenêtre de 4 semaines) : ${info.used != null ? info.used : 'n/d'}.`,
+      `Nouvelle base : ${nb} séances / 4 semaines. Plafond : ${nm}.`];
+    if (nm - nb > maxExtra) lines.push(`Attention : l'écart base→plafond dépasse ${maxExtra} créneaux d'extension ponctuelle recommandés.`);
+    if (info.used != null && nb < info.used) lines.push(`Attention : la nouvelle base (${nb}) est inférieure aux séances déjà planifiées (${info.used}). Aucune séance existante n'est supprimée.`);
+    lines.forEach((l) => preview.append(el('div', {}, l)));
+  };
+  base.addEventListener('input', refresh); max.addEventListener('input', refresh); setTimeout(refresh, 0);
+  const m = modal('Régler la capacité avis (4 semaines)', [
+    el('p', { class: 'muted small' }, "Base : nombre de séances d'avis visées. Plafond : maximum absolu (extensions ponctuelles comprises, 2 max recommandés). Aucune séance existante n'est jamais supprimée."),
+    el('div', { class: 'rule-grid' }, el('label', { class: 'lbl' }, 'Base'), base, el('label', { class: 'lbl' }, 'Plafond'), max),
+    preview,
+  ], [
+    el('button', { class: 'btn btn-ghost', onclick: () => m.close() }, 'Annuler'),
+    el('button', { class: 'btn btn-primary', onclick: () => { store.setAvisCapacity({ base: base.value, max: max.value }); m.close(); toast('Capacité mise à jour.'); render(mount); } }, 'Confirmer'),
   ]);
 }
 
@@ -799,9 +861,9 @@ function reglagesTab(mount) {
       el('h3', {}, 'Sauvegarde locale de la démonstration'),
       el('p', { class: 'muted small' }, 'Exporter/restaurer l\'état de la démo (utile pour les tests). Données fictives uniquement.'),
       el('div', { class: 'row-actions wrap' },
-        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('demo-etat.json', store.exportState(), 'application/json'); toast('État exporté.'); } }, 'Exporter l\'état'),
+        el('button', { class: 'btn btn-ghost', onclick: () => confirmPersonalData("L'export de l'état complet", () => { downloadText('demo-etat.json', store.exportState(), 'application/json'); toast('État exporté.'); }) }, 'Exporter l\'état'),
         el('button', { class: 'btn btn-ghost', onclick: () => importInput.click() }, 'Importer un état'),
-        el('button', { class: 'btn btn-ghost', onclick: () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); } }, 'Exporter le journal (CSV)'),
+        el('button', { class: 'btn btn-ghost', onclick: () => confirmPersonalData("L'export du journal", () => { downloadText('journal.csv', store.journalCsv(), 'text/csv;charset=utf-8'); toast('Journal exporté (CSV).'); }) }, 'Exporter le journal (CSV)'),
       ),
       importInput,
     ),
@@ -842,6 +904,11 @@ function guidedTour() {
   ];
   modal('Visite guidée — Médecin', steps.map(([t2, d]) => el('div', { class: 'faq-item' }, el('div', { class: 'faq-q' }, t2), el('div', { class: 'muted small' }, d))),
     [el('button', { class: 'btn btn-primary', onclick: () => document.querySelector('.modal-back')?.remove() }, 'Compris')]);
+}
+
+// Encadrement des exports/impressions contenant des données personnelles (même fictives).
+function confirmPersonalData(action, cb) {
+  confirmDialog(`${action} contient des données personnelles (fictives ici). En production, ces exports et impressions devront être encadrés : accès restreint, journalisation, conservation limitée. Continuer ?`, { okLabel: 'Continuer' }).then((ok) => { if (ok) cb(); });
 }
 
 function render(mount) {

@@ -37,7 +37,8 @@ export function buildSeed(now = new Date()) {
     protectedTemplate: {},                                                           // (fonction disponible, non utilisée)
     extraAvisSlots: [],                                                              // créneaux d'avis ponctuels (max 2 / 4 sem.) pour porter 8 -> 10
     convertedAvisSlots: [],                                                          // créneaux d'avis convertis manuellement en suivi ordinaire (ISO)
-    closures: [],                                                                    // congés/fermetures datées
+    closures: [],                                                                    // congés/fermetures datées (+ récurrentes hebdo)
+    slotChanges: [],                                                                 // modifications de trame datées (date d'effet) : jamais rétroactives
     avisCapacity: { windowDays: 28, target: 8, base: 8, max: 10, maxExtra: 2 },      // 8 séances / 4 semaines (extensible à 10)
     notifyConfig: { onComment: true, remindersJ2: true, remindersJ1: true },         // notifications neutres configurables
   };

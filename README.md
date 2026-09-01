@@ -1,4 +1,4 @@
-# Portail de rendez-vous — Dr Mathieu Place (prototype v5)
+# Portail de rendez-vous — Dr Mathieu Place (prototype v6)
 
 Prototype **de démonstration** d'un portail de prise de rendez-vous pour la consultation privée du **Dr Mathieu Place, psychiatre**, avec des **règles de suivi déterministes et strictement internes** propres à chaque patient.
 
@@ -7,6 +7,23 @@ Prototype **de démonstration** d'un portail de prise de rendez-vous pour la con
 ## Essayer en ligne
 
 **https://sebplace.github.io/portail-consultation-privee/** · installable (PWA), clair/sombre, rôles Patient · Secrétariat · Médecin (aussi via `#patient`, `#secretariat`, `#medecin`).
+
+## V6 finale (avant gel fonctionnel)
+
+Périmètre resserré demandé par le client, puis **gel** pour passer au back-end / sécurité / RGPD.
+
+- **Garde-fou désistement (secrétariat)** : le bouton d'inscription est **désactivé** ("Désistement indisponible") lorsque la personne n'a **aucun rendez-vous futur** planifié, comme côté patient.
+- **Undo = opération corrective journalisée** : annuler une action **restaure la donnée métier** mais **ne supprime jamais une trace**. Le journal est **append-only** et l'undo y ajoute lui-même une entrée « annulation corrective ».
+- **Éditeur de trame avec date d'effet** : tout ajout/retrait de créneau porte une **date d'effet**, n'est **jamais rétroactif** (les créneaux et rendez-vous antérieurs restent intacts) et affiche un **aperçu des rendez-vous devenus incompatibles** (jamais déplacés). Un retrait daté dans le futur est conservé comme *override* appliqué à partir de la date choisie.
+- **Réglage de capacité avis** : **aperçu d'impact** (séances déjà planifiées vs base/plafond, alerte au-delà des 2 extensions recommandées) et **confirmation**.
+- **Fermetures récurrentes hebdomadaires** (jour / matin / après-midi) en plus des fermetures datées. **Jours fériés belges** proposés au **pré-remplissage**, jamais bloqués automatiquement.
+- **Bandeau urgence 12:15 (secrétariat)** : liste globale des **accords tracés** du médecin, encodables en un clic ; jamais proposé automatiquement.
+- **Mode appel téléphonique** explicite au secrétariat (agir à la place de la personne qui téléphone) + **rappel visible du périmètre** du rôle.
+- **Encadrement des exports / impressions** contenant des données personnelles : **confirmation** préalable rappelant les exigences de production.
+- **Textes centralisés** (dictionnaire i18n) et **accessibilité de base**.
+- **Tests** : moteur (23), stockage/acceptation (10, dont undo correctif et date d'effet), **end-to-end logique** (6 étapes), et **gate** `node check.mjs` (syntaxe + format + tests).
+
+> Reporté (après le gel) : vue mensuelle, historique patient, reprogrammation guidée, impression, notifications internes, statistiques fines, multilingue, confirmation de présence, visite guidée. Certaines de ces fonctions sont **déjà présentes** dans le prototype (non prioritaires) et n'ont pas été retirées.
 
 ## Consolidation v5
 
@@ -43,7 +60,9 @@ Aucune dépendance, aucun build. JavaScript standard (ES modules).
 
 ```bash
 node tests/rules.test.mjs    # tests du moteur (23 tests)
-node tests/store.test.mjs    # 7 tests d'acceptation (store)
+node tests/store.test.mjs    # tests d'acceptation + garde-fous (10 tests)
+node tests/e2e.test.mjs      # scénario end-to-end de la logique métier (6 étapes)
+node check.mjs               # gate : syntaxe + format + toutes les suites
 node tests/serve.mjs         # http://localhost:5173
 ```
 
@@ -72,5 +91,6 @@ assets/
     views/doctor.js       tableau de bord médecin
     views/dom.js          utilitaires (modale, confirm, .ics, téléchargement…)
 tests/
-  rules.test.mjs · serve.mjs
+  rules.test.mjs · store.test.mjs · e2e.test.mjs · serve.mjs
+check.mjs                 gate : node --check + format + suites de tests
 ```

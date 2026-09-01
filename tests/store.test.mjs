@@ -97,4 +97,45 @@ test('T7 : undo restaure l\'état précédent', () => {
   assert(n2 === n0, 'undo doit restaurer l\'état');
 });
 
+test('T8 : undo est une opération corrective journalisée (ne supprime aucune trace)', () => {
+  store.reset();
+  const ord = store.openSlots({ now: now() });
+  const bk = store.bookAppointment('p-clara', ord[0].start.toISOString(), { actor: 'patient' });
+  store.cancelAppointment(bk.id, { actor: 'patient' });
+  const logAfterCancel = store.get().log.length;
+  store.undo();
+  const logAfterUndo = store.get().log.length;
+  assert(logAfterUndo >= logAfterCancel, 'le journal ne doit jamais être raccourci par un undo');
+  const last = store.get().log[store.get().log.length - 1];
+  assert(/corrective/.test(last.action), 'undo doit journaliser une opération corrective');
+  const apt = store.appointments().find((a) => a.id === bk.id);
+  assert(apt && apt.status === 'planifie', 'la donnée métier doit être restaurée');
+});
+
+test('T9 : date d\'effet de la trame (jamais rétroactive) + liste des incompatibles', () => {
+  store.reset();
+  const ord = store.openSlots({ now: now() });
+  const slot = ord[0];
+  const wd = slot.start.getDay() === 0 ? 7 : slot.start.getDay();
+  store.bookAppointment('p-clara', slot.start.toISOString(), { actor: 'patient' });
+  const effPast = new Date().toISOString().slice(0, 10);
+  const incNow = store.incompatibleAfterSlotRemoval(wd, slot.time, 'ordinaire', effPast);
+  assert(incNow.some((a) => a.datetime === slot.start.toISOString()), 'rdv incompatible si retrait immédiat');
+  const effFuture = new Date(slot.start.getTime() + 60 * 864e5).toISOString().slice(0, 10);
+  const incFut = store.incompatibleAfterSlotRemoval(wd, slot.time, 'ordinaire', effFuture);
+  assert(incFut.length === 0, 'rdv avant la date d\'effet non incompatible');
+  const rem = store.removeSlot(wd, slot.time, 'ordinaire', { effectiveDate: effFuture });
+  assert(rem.ok, 'retrait daté accepté');
+  assert((store.doctor().weeklyTemplate[wd] || []).includes(slot.time), 'retrait futur ne mute pas la trame de base');
+  assert(store.trameChanges().some((c) => c.action === 'remove' && c.time === slot.time), 'override daté enregistré');
+});
+
+test('T10 : fermeture récurrente hebdomadaire bloque le bon jour et la bonne demi-journée', () => {
+  store.reset();
+  const hasTuePm = (slots) => slots.some((s) => { const wd = s.start.getDay() === 0 ? 7 : s.start.getDay(); return wd === 2 && s.start.getHours() >= 12; });
+  assert(hasTuePm(store.openSlots({ now: now() })), 'des créneaux mardi après-midi doivent exister au départ');
+  store.addClosure({ recurring: 'weekly', weekday: 2, part: 'pm', label: 'test récurrente' });
+  assert(!hasTuePm(store.openSlots({ now: now() })), 'aucun créneau mardi après-midi après la fermeture récurrente');
+});
+
 console.log(`\n${passed} test(s) d'acceptation réussi(s).`);
